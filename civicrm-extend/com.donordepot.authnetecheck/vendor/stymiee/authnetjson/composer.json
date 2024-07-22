@@ -1,0 +1,39 @@
+{
+    "name": "stymiee/authnetjson",
+    "type": "library",
+    "description": "Library that abstracts Authorize.Net's JSON APIs. This includes the Advanced Integration Method (AIM), Automated Recurring Billing (ARB), Customer Information Manager (CIM), Transaction Reporting, Simple Integration Method (SIM), and Webhooks.",
+    "keywords": [
+        "PHP",
+        "authnetjson",
+        "Authorize.Net",
+        "JSON",
+        "json-api",
+        "webhook",
+        "capture-transaction",
+        "authorize-net",
+        "authorizenet",
+        "payment",
+        "payment-gateway"
+    ],
+    "homepage": "http://github.com/stymiee/authnetjson",
+    "license": "Apache-2.0",
+    "authors": [
+        {
+            "name": "John Conde",
+            "email": "stymiee@gmail.com",
+            "homepage": "http://www.johnconde.net",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": ">=5.4.0",
+        "curl/curl": "^1.5",
+        "ext-curl": "*",
+        "ext-json": "*"
+    },
+    "autoload": {
+        "classmap": [
+            "src/"
+        ]
+    }
+}

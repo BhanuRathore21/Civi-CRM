@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<extension key="com.cividesk.client.fjmc" type="module">
+  <file>fjmc</file>
+  <name>Cividesk support for FJMC</name>
+  <description>Cividesk support for FJMC</description>
+  <license>Proprietary</license>
+  <maintainer>
+    <author>Sunil Pawar </author>
+    <email>support@cividesk.com</email>
+  </maintainer>
+  <releaseDate>2016-12-27</releaseDate>
+  <version>1.0</version>
+  <develStage>alpha</develStage>
+  <compatibility>
+    <ver>4.6</ver>
+    <ver>4.7</ver>
+  </compatibility>
+  <comments>This module is created as part of our SaaS offering.</comments>
+  <civix>
+    <namespace>CRM/Fjmc</namespace>
+  </civix>
+</extension>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<menu>
+  <item>
+     <path>civicrm/fjmcRelationshipExt/ajax</path>
+     <page_callback>FJMCRelationshipExt::getData</page_callback>
+     <access_arguments>access CiviCRM</access_arguments>
+  </item>
+</menu>

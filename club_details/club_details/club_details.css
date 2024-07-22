@@ -1,0 +1,102 @@
+.fjmc_officeContainer th{
+    font-weight:bold;
+}
+
+.fjmc_member_div {
+  width: 98%;
+  height: 400px;
+  overflow-y:auto;
+  overflow-x:hidden;
+  margin: 0 auto;
+}
+
+.fjmc_member_table {
+  width: 97%;
+}
+
+.fjmc_member_table tr {
+  border: 1px solid gray;
+}
+
+.fjmc_member_table th {
+  background-color: #808080;
+  color: white;
+  border: 1px solid white;
+}
+
+.fjmc_member_table td {
+  border: 1px solid gray;
+}
+.redbk {
+  background-color: #CC0000;
+  color: white;
+}
+.two-col {
+    overflow: hidden;/* Makes this div contain its floats */
+    width:100%;
+}
+
+.two-col .col1,
+.two-col .col2 {
+    width 49%;
+}
+
+.two-col .col1 {
+    float: left;
+    margin:0 15px 0 0;
+}
+
+.two-col .col2 {
+    float: right;
+}
+
+.two-col label {
+    display: block;
+}
+a.button {
+  background: #fff url(buttons.png) 0 0 repeat-x;
+  border: 1px solid #e4e4e4;
+  border-bottom: 1px solid #b4b4b4;
+  border-left-color: #d2d2d2;
+  border-right-color: #d2d2d2;
+  color: #3a3a3a;
+  cursor: pointer;
+  font-size: 0.929em;
+  font-weight: normal;
+  text-align: center;
+  margin-bottom: 1em;
+  margin-right: 0.6em; /* LTR */
+  padding: 4px 17px;
+  -khtml-border-radius: 15px;
+  -moz-border-radius: 20px;
+  -webkit-border-radius: 15px;
+  border-radius: 15px;
+}
+a.button:link,
+a.button:visited,
+a.button:hover,
+a.button:focus,
+a.button:active {
+  text-decoration: none;
+  color: #5a5a5a;
+}
+
+.fjmc_officeContainer {
+    width:95%;
+}
+.fjmc_officeContainer .ofc_title{
+    font-weight:bold;
+}
+#block-club-details-club-officers #edit-help {
+    margin-top:-5px;
+    padding-top:0;
+}
+
+.club-details-actions{float: none; padding: 5px 0; clear: both;}
+.club-details-actions input.button{border-radius: 15px;}
+form[id^="club-details-form"]{padding: 0; margin: 0;}
+form[id^="club-details-form"] .form-type-file{margin: 0; float: left; width: 200px; }
+form[id^="club-details-form"] .form-type-file .form-file{margin: 0;}
+form[id^="club-details-form"] input[type="submit"]{margin: 0;}
+.import-export-divider { float: left; clear: both; border-top: 1px solid #000; margin-top: 5px; width: 100%; }
+.club-details-actions h3.import-export-heading{ clear: both; float: left; padding: 0; width: 100%; }

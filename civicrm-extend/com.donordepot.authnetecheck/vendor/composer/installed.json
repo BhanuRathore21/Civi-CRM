@@ -1,0 +1,161 @@
+[
+    {
+        "name": "authorizenet/authorizenet",
+        "version": "2.0.0",
+        "version_normalized": "2.0.0.0",
+        "source": {
+            "type": "git",
+            "url": "https://github.com/AuthorizeNet/sdk-php.git",
+            "reference": "7fa78e6397d363296e462c3b348573c17175b7a8"
+        },
+        "dist": {
+            "type": "zip",
+            "url": "https://api.github.com/repos/AuthorizeNet/sdk-php/zipball/7fa78e6397d363296e462c3b348573c17175b7a8",
+            "reference": "7fa78e6397d363296e462c3b348573c17175b7a8",
+            "shasum": ""
+        },
+        "require": {
+            "ext-curl": "*",
+            "ext-json": "*",
+            "php": ">=5.6"
+        },
+        "require-dev": {
+            "phpmd/phpmd": "~2.0",
+            "phpunit/phpunit": "~4.0"
+        },
+        "time": "2019-01-14T13:32:41+00:00",
+        "type": "library",
+        "installation-source": "dist",
+        "autoload": {
+            "classmap": [
+                "lib"
+            ]
+        },
+        "notification-url": "https://packagist.org/downloads/",
+        "license": [
+            "proprietary"
+        ],
+        "description": "Official PHP SDK for Authorize.Net",
+        "homepage": "http://developer.authorize.net",
+        "keywords": [
+            "authorize.net",
+            "authorizenet",
+            "ecommerce",
+            "payment"
+        ]
+    },
+    {
+        "name": "curl/curl",
+        "version": "1.9.3",
+        "version_normalized": "1.9.3.0",
+        "source": {
+            "type": "git",
+            "url": "https://github.com/php-mod/curl.git",
+            "reference": "43436a604b18c2a985cbc3f983be817fbe500e99"
+        },
+        "dist": {
+            "type": "zip",
+            "url": "https://api.github.com/repos/php-mod/curl/zipball/43436a604b18c2a985cbc3f983be817fbe500e99",
+            "reference": "43436a604b18c2a985cbc3f983be817fbe500e99",
+            "shasum": ""
+        },
+        "require": {
+            "ext-curl": "*",
+            "php": ">=5.3.0"
+        },
+        "require-dev": {
+            "phpunit/phpunit": "3.7.*",
+            "squizlabs/php_codesniffer": "~2.1"
+        },
+        "time": "2018-09-05T17:16:47+00:00",
+        "type": "library",
+        "installation-source": "dist",
+        "autoload": {
+            "psr-0": {
+                "Curl": "src/"
+            }
+        },
+        "notification-url": "https://packagist.org/downloads/",
+        "license": [
+            "MIT"
+        ],
+        "authors": [
+            {
+                "name": "Hassan Amouhzi",
+                "email": "hassan@anezi.net",
+                "homepage": "http://hassan.amouhzi.com"
+            },
+            {
+                "name": "php-curl-class",
+                "homepage": "https://github.com/php-curl-class"
+            },
+            {
+                "name": "user52",
+                "homepage": "https://github.com/user52"
+            }
+        ],
+        "description": "cURL class for PHP",
+        "homepage": "https://github.com/php-mod/curl",
+        "keywords": [
+            "curl",
+            "dot"
+        ]
+    },
+    {
+        "name": "stymiee/authnetjson",
+        "version": "3.1.9",
+        "version_normalized": "3.1.9.0",
+        "source": {
+            "type": "git",
+            "url": "https://github.com/stymiee/authnetjson.git",
+            "reference": "2161c1fb0b688d52cdc56af08d37acf96898bb1f"
+        },
+        "dist": {
+            "type": "zip",
+            "url": "https://api.github.com/repos/stymiee/authnetjson/zipball/2161c1fb0b688d52cdc56af08d37acf96898bb1f",
+            "reference": "2161c1fb0b688d52cdc56af08d37acf96898bb1f",
+            "shasum": ""
+        },
+        "require": {
+            "curl/curl": "^1.5",
+            "ext-curl": "*",
+            "ext-json": "*",
+            "php": ">=5.4.0"
+        },
+        "time": "2019-06-04T00:18:39+00:00",
+        "type": "library",
+        "installation-source": "dist",
+        "autoload": {
+            "classmap": [
+                "src/"
+            ]
+        },
+        "notification-url": "https://packagist.org/downloads/",
+        "license": [
+            "Apache-2.0"
+        ],
+        "authors": [
+            {
+                "name": "John Conde",
+                "email": "stymiee@gmail.com",
+                "homepage": "http://www.johnconde.net",
+                "role": "Developer"
+            }
+        ],
+        "description": "Library that abstracts Authorize.Net's JSON APIs. This includes the Advanced Integration Method (AIM), Automated Recurring Billing (ARB), Customer Information Manager (CIM), Transaction Reporting, Simple Integration Method (SIM), and Webhooks.",
+        "homepage": "http://github.com/stymiee/authnetjson",
+        "keywords": [
+            "JSON-API",
+            "authnetjson",
+            "authorize-net",
+            "authorize.net",
+            "authorizenet",
+            "capture-transaction",
+            "json",
+            "payment",
+            "payment-gateway",
+            "php",
+            "webhook"
+        ]
+    }
+]

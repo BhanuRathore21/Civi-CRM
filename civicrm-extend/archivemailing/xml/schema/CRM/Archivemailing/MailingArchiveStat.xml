@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<table>
+  <base>CRM/Archivemailing</base>
+  <class>MailingArchiveStat</class>
+  <name>civicrm_mailing_archive_stat</name>
+  <comment>Mailing Archive Statistics</comment>
+  <log>true</log>
+  <field>
+    <name>id</name>
+    <type>int unsigned</type>
+    <required>true</required>
+    <comment>Unique MailingArchiveStat ID</comment>
+    <html>
+      <type>Number</type>
+    </html>
+  </field>
+  <primaryKey>
+    <name>id</name>
+    <autoincrement>true</autoincrement>
+  </primaryKey>
+  <field>
+    <name>mailing_id</name>
+    <type>int unsigned</type>
+    <comment>FK to Mailing</comment>
+  </field>
+  <field>
+    <name>recipients</name>
+    <type>int unsigned</type>
+    <comment>Number of recipients</comment>
+  </field>
+  <field>
+    <name>deliveries</name>
+    <type>int unsigned</type>
+    <comment>Number of emails delivered</comment>
+  </field>
+  <field>
+    <name>opens</name>
+    <type>int unsigned</type>
+    <comment>Number of emails opened</comment>
+  </field>
+  <field>
+    <name>clicks</name>
+    <type>int unsigned</type>
+    <comment>Number of links clicked</comment>
+  </field>
+  <field>
+    <name>forwards</name>
+    <type>int unsigned</type>
+    <comment>Number of mails forwarded</comment>
+  </field>
+  <field>
+    <name>replies</name>
+    <type>int unsigned</type>
+    <comment>Number of replies</comment>
+  </field>
+  <field>
+    <name>bounces</name>
+    <type>int unsigned</type>
+    <comment>Number of bounces</comment>
+  </field>
+  <field>
+    <name>unsubscribes</name>
+    <type>int unsigned</type>
+    <comment>Number of unsubscribes</comment>
+  </field>
+  <field>
+    <name>optouts</name>
+    <type>int unsigned</type>
+    <comment>Number of optouts</comment>
+  </field>
+  <foreignKey>
+    <name>mailing_id</name>
+    <table>civicrm_mailing</table>
+    <key>id</key>
+    <onDelete>CASCADE</onDelete>
+  </foreignKey>
+</table>

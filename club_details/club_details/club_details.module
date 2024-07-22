@@ -1,0 +1,3729 @@
+<?php
+
+define('EDIT_WEBFORM_ID', 7029);
+define('CREATE_WEBFORM_ID', 5361);
+
+require_once drupal_get_path('module', 'phpexcel').'/phpexcel.inc';
+
+
+class PageParams {
+    public static $member_belongs_message = false;
+}
+$contact_id = -1;
+$club_details_permissions = array();
+
+function club_details_menu() {
+  $items = array();
+
+  $items['club_details/update_officer/%/%/%/%/%/%'] = array(
+    'title' => 'Update Officer',
+    'access callback' => 'club_details_user_access',
+    'page arguments' => array(2,3,4,5,6,7),
+    'page callback' => 'club_details_update_officer',
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['club_details/update_regional_officer/%/%/%/%/%/%'] = array(
+    'title' => 'Update Regional_Officer',
+    'access callback' => 'club_details_user_access',
+    'page arguments' => array(2,3,4,5,6,7),
+    'page callback' => 'club_details_update_regional_officer',
+    'type' => MENU_CALLBACK,
+  );
+
+
+  $items['club_details'] = array(
+    'title' => 'Club Management',
+    'access callback' => 'club_details_user_access',
+    'page callback' => 'club_details_router',
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['club_details/mem_update/%/%ctools_js'] = array(
+    'page callback' => 'club_details_mem_update_callback',
+    'page arguments' => array(1,2),
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['club_details/create/order/%/%'] = array(
+    'page callback' => '_creat_order',
+    'page arguments' => array(3,4),
+    'access arguments' => array('create orders'),
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['regional/report'] = array(
+    'title' => 'Regional Report',
+    'page callback' => 'regional_report',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['regional/reportonfly/%'] = array(
+    'title' => 'Regional Report',
+    'page callback' => 'regional_report_onfly',
+    'page arguments' => array(2),
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['club/%/import'] = array(
+    'title' => 'Import Club Data',
+    'page arguments' => array(1),
+    'page callback' => '_club_import_xls',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+function club_details_civicrm_alterContent( &$content, $context, $tplName, &$object ) {
+  if($context == "page") {
+    if($tplName == "CRM/Contact/Page/View/Relationship.tpl") {
+      $club_id = $object->_contactId;
+      $params = array( 'id' => $club_id );
+      try{
+        $result = civicrm_api3('contact', 'get', $params);
+        if (!$result) return false;
+        $result = $result['values'][$club_id];
+        if (($result['contact_type'] == 'Organization') && ($result['contact_sub_type'][0] == 'Club')) {
+            $content .= "Officers for club {$result['display_name']}<h2>Officers</h2>";
+            $officers = club_details_get_club_officers($club_id);
+            $div = '<div>';
+            foreach ($officers as $office => $holders) {
+                $div .= "<b>$office ";
+                if (count($holders) == 1) {
+                    foreach ($holders as $cid => $holder) {
+                        if (!empty($holder['desc'])) {
+                            $div .= "- " . $holder['desc']. ": </b>";
+                        } else {
+                            $div .= ': </b>';
+                        }
+                        $div .= (isset($holder['name']) ? $holder['name'] : '') . "<br>";
+                    }
+                } else {
+                    $div .= ": </b>";
+                    foreach ($holders as $cid => $params) {
+                        $div .= '<br>';
+                        if (!empty($params['desc'])) {
+                            $div .= "<b>- " . $params['desc']. ": </b>";
+                        } else {
+                            $div .= "&nbsp;&nbsp;&nbsp;&nbsp;";
+                            }
+                            $div .= (isset($params['name']) ? $params['name'] : '');
+                        }
+                        $div .= "<br>";
+                    }
+                }
+                $div .= '</div>';
+                $content .= $div;
+                $members = club_details_get_club_members($club_id);
+            }
+        }
+        catch (CiviCRM_API3_Exception $e) {
+            drupal_set_message($e->getMessage());
+            return false;
+        }
+        return;
+    }
+}
+}
+
+function club_details_menu_local_tasks_alter(&$data) {
+  global $user;
+  if ((arg(0) == 'node') && (arg(1) == EDIT_WEBFORM_ID) && (!in_array('administrator', $user->roles))) {
+    if (isset($data['tabs'][0]['output'])) {
+      foreach ($data['tabs'][0]['output'] as $key => $value) {
+        unset($data['tabs'][0]['output'][$key]);
+      }
+    }
+  }
+}
+
+function club_details_node_access($node, $op, $account) {
+    if (isset($node->nid) && $node->nid == EDIT_WEBFORM_ID) {
+        return club_details_user_access() ? NODE_ACCESS_ALLOW : NODE_ACCESS_DENY;
+    }
+    return NODE_ACCESS_IGNORE;
+}
+
+function _club_details_make_link($link_text, $id, $club_id) {
+
+    //return "/update-club-member?cid1=$id&club_id=$club_id"
+    return '<div id="mem-update-modal-link"><a href="' . "/content/member-update-form?cid1=$id&club_id=$club_id" . '">' . $link_text . "</a></div>";
+
+}
+
+function club_details_getMemberInfo($member_id, $club_id) {
+
+    if ($member_id && $club_id) {
+        $result = array('member_id'=>$member_id, 'club_id'=>$club_id);
+
+        $sql = "SELECT cr.id, cr.is_active, cr.end_date,
+                       cf.inactive_reason_273 AS inactive_reason, IFNULL(ccb.is_deceased,0) AS is_deceased,
+                       coalesce(eprim.email, emain.email, ehome.email) AS email
+            FROM civicrm_relationship cr
+            LEFT JOIN civicrm_contact ccb ON ccb.id=cr.contact_id_a AND ccb.is_deleted <> 1
+            LEFT JOIN civicrm_email eprim ON eprim.contact_id = cr.contact_id_a AND eprim.is_primary = 1
+            LEFT JOIN civicrm_email ehome ON ehome.contact_id = cr.contact_id_a AND ehome.`location_type_id` = 3
+            LEFT JOIN civicrm_email emain ON emain.contact_id = cr.contact_id_a AND emain.`location_type_id` = 1
+            LEFT JOIN civicrm_value_chaverot_61 cf ON cf.entity_id = cr.id
+            WHERE cr.contact_id_b = $club_id
+            AND ccb.id = $member_id
+            AND cr.relationship_type_id = 10
+            ORDER BY cr.is_active DESC, ccb.sort_name";
+	    $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+	    if ($dao->N == 0) {
+	        drupal_set_message('Could not retrieve contact');
+	        return false;
+        }
+        $dao->fetch();
+        $result['id'] = $dao->id;
+        $result['is_active'] = $dao->is_active;
+        $result['end_date'] = $dao->end_date;
+        $result['inactive_reason'] = $dao->inactive_reason;
+        $result['is_deceased'] = $dao->is_deceased;
+	$result['email'] = $dao->email;
+	$dao->free();
+        return $result;
+    } else {
+        return false;
+    }
+}
+
+function club_details_new_member_submit($form, &$form_state) {
+
+    $webform_nid = CREATE_WEBFORM_ID;
+    $node = node_load($webform_nid);
+
+    ## clear all the previous submissions for this webform
+    ## results are persisted in civi so they're not needed in webform_submitted_data tables for this form
+    module_load_include('inc', 'webform', 'includes/webform.submissions');
+    $submissions = webform_get_submissions($webform_nid);
+    foreach ($submissions as $submission) {
+      webform_submission_delete($node, $submission);
+    }
+
+    ## get form fields for additional processing beyond civi update
+    $club_id = $form_state['values']['submitted']['club_id'];
+    $first_name = trim($form_state['values']['submitted']['first_name']);
+    $last_name = trim($form_state['values']['submitted']['last_name']);
+    $address1 = trim($form_state['values']['submitted']['address_1']);
+    $address2 = trim($form_state['values']['submitted']['address_2']);
+    $city = trim($form_state['values']['submitted']['city']);
+    $state = $form_state['values']['submitted']['state'];
+    $province = $form_state['values']['submitted']['province'];
+    $country = $form_state['values']['submitted']['country'];
+    $postal_code = trim($form_state['values']['submitted']['postal_code']);
+    $mobile_phone = trim($form_state['values']['submitted']['mobile_phone']);
+    $home_phone = trim($form_state['values']['submitted']['home_phone']);
+    $email = trim($form_state['values']['submitted']['email']);
+    $active = 1;
+
+    if (empty($club_id)) {
+        drupal_set_message("club_id not found in URL");
+        return;
+    }
+
+    $result = club_details_civi_create_member($first_name, $last_name, $mobile_phone, $home_phone);
+    if ($result == false) {
+        drupal_set_message("Could not save Civi Contact");
+        return;
+    }
+    $contact_id = $result['id'];
+
+    if ( !empty($address1) && !empty($city) && (!empty($state) || !empty($province)) && !empty($country) && !empty($postal_code) ) {
+        $address = $address1 . ' ' . $address2;
+        $result = club_details_civi_add_address($contact_id, $address, $city, $state, $postal_code, $country, $province);
+        if ($result == false) {
+            drupal_set_message("Could not save Civi Address for $first_name $last_name ($contact_id)");
+            return;
+        }
+    }
+
+    if (!empty($email)) {
+        club_details_update_special_fields(true, $contact_id, $club_id, $email, 1);
+    }
+
+    ## Add the member to the club
+    $today = "'" . date('Y-m-d h:i:s') . "'";
+    $sql = "insert into civicrm_relationship (contact_id_a, contact_id_b, relationship_type_id, start_date) values ($contact_id, $club_id, 10, $today)";
+    $dao = CRM_Core_DAO::executeQuery( $sql );
+    $dao->free();
+
+    drupal_set_message("Added contact $first_name $last_name ($contact_id)");
+    drupal_goto("club_details/club/$club_id");
+    return;
+}
+
+function club_details_civi_create_member($first_name, $last_name, $mobile_phone = '', $home_phone = '') {
+    $params = array(
+      'contact_type' => 'Individual',
+      'first_name' => $first_name,
+      'last_name' => $last_name,
+    );
+
+    if($mobile_phone != '' || $home_phone != ''){
+
+        $params['api.phone.create'] = array();
+
+        if($mobile_phone != '') {
+            array_push($params['api.phone.create'], array('location_type_id' => 3, 'phone' => $mobile_phone, 'phone_type_id' => 2));
+        }
+
+        if($home_phone != '') {
+            array_push($params['api.phone.create'], array('location_type_id' => 3, 'phone' => $home_phone, 'phone_type_id' => 1));
+        }
+
+    }
+
+    try{
+      $result = civicrm_api3('contact', 'create', $params);
+      return $result;
+    }
+    catch (CiviCRM_API3_Exception $e) {
+      drupal_set_message($e->getMessage());
+      return false;
+      //$errorCode = $e->getErrorCode();
+      //$errorData = $e->getExtraParams();
+    }
+}
+
+function club_details_civi_add_address($contact_id, $street_address, $city, $state, $postal_code, $country, $province) {
+    $sql = "SELECT id as country_code FROM civicrm_country WHERE iso_code = '$country'";
+    $dao = CRM_Core_DAO::executeQuery( $sql );
+    if ($dao->fetch() && $dao->N) {
+        $country_code = $dao->country_code;
+    } else {
+        drupal_set_message("Cannot add address.  Country invalid");
+        return false;
+    }
+    if (empty($country_code)) {
+        drupal_set_message("Cannot add address.  Country invalid");
+        return false;
+    }
+
+    if (empty($state) && !empty($province)) {
+        $state = $province;
+    }
+    $sql = "SELECT id FROM civicrm_state_province WHERE country_id = $country_code and abbreviation = '$state'";
+    $dao = CRM_Core_DAO::executeQuery( $sql );
+    if ($dao->fetch() && $dao->N) {
+        $state_code = $dao->id;
+    } else {
+        drupal_set_message("Cannot add address.  State invalid");
+        return false;
+    }
+    $dao->free();
+
+    $params = array(
+      'contact_id' => $contact_id,
+      'street_parsing' => 1,
+      'location_type_id' => 3, // main address type
+      'street_address' => $street_address,
+      'state_province_id' => $state_code,
+      'postal_code' => $postal_code,
+      'country_id' => $country_code,
+      'city' => $city,
+      'is_primary' => 1,
+    );
+
+    try {
+      $result = civicrm_api3('address', 'create', $params);
+      return true;
+    }
+    catch (CiviCRM_API3_Exception $e) {
+      drupal_set_message($e->getMessage());
+      return false;
+      //$errorCode = $e->getErrorCode();
+      //$errorData = $e->getExtraParams();
+    }
+}
+
+function club_details_delete_group_validate($form,&$form_state) {
+
+    $group_ids = $form_state['values']['submitted']['group_ids'];
+    $groups = explode(',', $group_ids);
+    foreach ($groups as $group) {
+	$group = trim($group);
+	if (!is_numeric($group)) {
+		form_set_error('group_ids', "Group $group is not a valid group_id, aborting");
+		return;
+	}
+    }
+}
+
+function club_details_civi_utilities_submit($form, &$form_state) {
+    $webform_nid = 5373;
+    $node = node_load($webform_nid);
+
+    ## clear all the previous submissions for this webform
+    ## results are not needed in webform_submitted_data tables for this form
+    module_load_include('inc', 'webform', 'includes/webform.submissions');
+    $submissions = webform_get_submissions($webform_nid);
+    foreach ($submissions as $submission) {
+      webform_submission_delete($node, $submission);
+    }
+    if (!defined('CIVICRM_SETTINGS_PATH')) civicrm_initialize();
+
+    $group_ids = $form_state['values']['submitted']['group_ids'];
+    $groups = explode(',', $group_ids);
+    if (count($groups) > 100) {
+          drupal_set_message("List must not contain more than 100 groups.  Aborted.");
+          return false;
+    }
+
+
+    $message_deleted = 'Successfully deleted groups ';
+
+    foreach ($groups as $group) {
+	$group = (int)trim($group);
+        try {
+	  $params = array('id' => $group);
+          $result = civicrm_api3('group', 'delete', $params);
+          if (!$result) {
+              drupal_set_message($message_deleted);
+              return false;
+          }
+          $message_deleted .= "$group, ";
+        }
+        catch (CiviCRM_API3_Exception $e) {
+          drupal_set_message($e->getMessage());
+          drupal_set_message($message_deleted);
+          return false;
+        }
+    }
+    drupal_set_message($message_deleted);
+
+}
+
+function club_details_my_form_submit($form, &$form_state) {
+
+    $webform_nid = EDIT_WEBFORM_ID;
+    $node = node_load($webform_nid);
+
+    $contact_id = $form_state['values']['submitted']['civicrm_1_contact_1_fieldset_fieldset']['civicrm_1_contact_1_contact_contact_id'];
+    if (!empty($contact_id)) {
+        ## clear all the previous submissions for this webform
+        ## results are persisted in civi so they're not needed in webform_submitted_data tables for this form
+        module_load_include('inc', 'webform', 'includes/webform.submissions');
+        $submissions = webform_get_submissions($webform_nid);
+        foreach ($submissions as $submission) {
+          webform_submission_delete($node, $submission);
+        }
+    }
+
+    ## get form fields for additional processing beyond civi update
+    $club_id = $form_state['values']['submitted']['civicrm_1_contact_1_fieldset_fieldset']['club_id'];
+    $contact_id = $form_state['values']['submitted']['civicrm_1_contact_1_fieldset_fieldset']['civicrm_1_contact_1_contact_contact_id'];
+    $email = trim($form_state['values']['submitted']['civicrm_1_contact_1_fieldset_fieldset']['email']);
+    $active = array_values($form_state['values']['submitted']['civicrm_1_contact_1_fieldset_fieldset']['active'])[0];
+    $inactive_reason = $form_state['values']['submitted']['civicrm_1_contact_1_fieldset_fieldset']['inactive_reason'];
+
+    if (empty($contact_id)) {
+        $_SESSION['new_member_fields'] = array(
+            'email' => $email,
+            'active' => $active,
+            'inactive_reason' => $inactive_reason
+        );
+        ## club_details_civicrm_post (hook) will handle the update of the special fields for the new civi contact
+        return;
+    }
+
+    club_details_update_special_fields(false, $contact_id, $club_id, $email, $active, $inactive_reason);
+    drupal_set_message("Member has been updated", 'status');
+}
+
+function club_details_my_form_redirect($form, &$form_state) {
+  // Restore redirect removed by webform CiviCRM ...
+  global $redirect_url;
+  $form_state['redirect'] = $redirect_url;
+}
+
+function club_details_update_special_fields($is_new = false, $contact_id, $club_id, $email, $active, $inactive_reason = null) {
+
+
+    try {
+
+        // Try to locate an existing email
+        $result = civicrm_api3('Email', 'get', array(
+            'sequential' => 1,
+            'contact_id' => $contact_id,
+            'location_type_id' => 3  // location type Main
+        ));
+
+        if ($result['count']) {
+            // There exists an email for this contact
+            if (empty($email)) {
+                // Per Barry Balik request, 12/6/2021, if email empty then remove email address if exists
+                $result = civicrm_api3('Email', 'delete', ['id' => $result['id']]);
+            } else {
+                // Overwrite existing email with new value
+                $params = array_shift($result['values']);
+                $params['email'] = $email;
+                $params['is_primary'] = 1;
+                $result = civicrm_api3('Email', 'create', $params);
+            }
+        } elseif (!empty($email)) {
+            // Create a new email for the contact
+            $params = array(
+                        'contact_id' => $contact_id,
+                        'email' => $email,
+                        'location_type_id' => 3,
+                        'is_primary' => 1,
+                      );
+            $result = civicrm_api3('Email', 'create', $params);
+        }
+
+    } catch (CiviCRM_API3_Exception $e) {
+        drupal_set_message($e->getMessage());
+    }
+
+    # update is_active and inactive_reason for the relationship
+    $sql_activate = "update civicrm_relationship
+            set is_active = 1, start_date = '" . date('Ymd') . "', end_date = null
+            where contact_id_a = $contact_id
+            and contact_id_b = $club_id
+            and relationship_type_id = 10";
+    $sql_deactivate = "update civicrm_relationship
+            set is_active = 0
+            where contact_id_a = $contact_id
+            and contact_id_b = $club_id
+            and relationship_type_id = 10";
+    if ($is_new) {
+        $dao = CRM_Core_DAO::executeQuery($sql_activate);
+    } else {
+        ## update active
+        $result = club_details_getMemberInfo($contact_id, $club_id);
+        if ($result) {
+            if ($result['is_active'] && !$active) {
+                ## deactivate member
+                $dao = CRM_Core_DAO::executeQuery($sql_deactivate);
+            } elseif (!$result['is_active'] && $active) {
+                ## activate member
+                $dao = CRM_Core_DAO::executeQuery($sql_activate);
+            }
+            # process inactive_reason
+            // If the relationship is active, then clear any Inactive_reason flag
+            if ($active) {
+                $inactive_reason = '';
+            }
+            // Forced creation or update of the inactive_reason record
+            $sql_inactive_reason = "
+INSERT INTO civicrm_value_chaverot_61
+       (entity_id, inactive_reason_273)
+VALUES ($result[id], '$inactive_reason')
+ON DUPLICATE KEY UPDATE
+       inactive_reason_273 = '$inactive_reason'";
+            $dao = CRM_Core_DAO::executeQuery($sql_inactive_reason);
+            $dao->free();
+            // Set deceased if indicated in the webform
+            // Notes:
+            // - a custom dev will also remove from mailing lists (cf. client.uscj extension)
+            // - we do not want to clear the deceased flag if later reversed as too sensitive
+            if ($inactive_reason == 'Deceased') {
+                $sql = "UPDATE civicrm_contact SET is_deceased = 1 WHERE id = $contact_id";
+                $dao = CRM_Core_DAO::executeQuery( $sql );
+                $dao->free();
+            }
+        }
+    }
+
+}
+
+function old_club_details_civicrm_post( $op, $objectName, $objectId, &$objectRef ) {
+//drupal_set_message("civi post $op $objectName $objectId");
+    if ($op == 'create' && $objectName == 'Individual' && isset($_SESSION['new_member_club_id']) ) {
+        $contact_id = $objectId;
+        $club_id = $_SESSION['new_member_club_id'];
+
+        ## Add the member to the club
+        $today = "'" . date('Y-m-d h:i:s') . "'";
+        $sql = "insert into civicrm_relationship (contact_id_a, contact_id_b, relationship_type_id, start_date) values ($contact_id, $club_id, 10, $today)";
+        $dao = CRM_Core_DAO::executeQuery( $sql );
+        $dao->free();
+
+        ## TODO: Need to add relationship to Region and Kehilla
+
+        $new_fields = $_SESSION['new_member_fields'];
+        club_details_update_special_fields(true, $contact_id, $club_id, $new_fields['email'], $new_fields['active']);
+    }
+}
+
+function club_details_form_alter(&$form, &$form_state, $form_id) {
+global $base_url, $redirect_url;
+    $club_id =  isset($_REQUEST['club_id']) ? $_REQUEST['club_id'] : false;
+    if ($form_id == 'webform_client_form_' . EDIT_WEBFORM_ID) {
+        $contact_id =  isset($_REQUEST['cid1']) ? $_REQUEST['cid1'] : false;
+        if ($club_id) {
+            $form['submitted']['civicrm_1_contact_1_fieldset_fieldset']['club_id']['#default_value'] = $club_id;
+            $_SESSION['new_member_club_id'] = $club_id;
+            if ($contact_id) {
+                $result = club_details_getMemberInfo($contact_id, $club_id);
+                if ($result) {
+                    $form['submitted']['civicrm_1_contact_1_fieldset_fieldset']['email']['#default_value'] = $result['email'];
+                    $form['submitted']['civicrm_1_contact_1_fieldset_fieldset']['active']['#default_value'] = array($result['is_active']);
+                    $form['submitted']['civicrm_1_contact_1_fieldset_fieldset']['inactive_reason']['#default_value'] = array($result['inactive_reason']);
+                }
+            }
+        }
+        ## call extra function on submit
+        array_unshift($form['#submit'], 'club_details_my_form_submit');
+        $redirect_url = "club_details/club/$club_id";
+        array_push($form['#submit'], 'club_details_my_form_redirect');
+    } elseif ($form_id == 'webform_client_form_' . CREATE_WEBFORM_ID) {
+        array_unshift($form['#submit'], 'club_details_new_member_submit');
+        if ($club_id) {
+            $form['submitted']['club_id']['#default_value'] = $club_id;
+            $_SESSION['new_member_club_id'] = $club_id;
+        }
+        $form['#validate'][]='club_details_add_member_validate';
+    } elseif ($form_id == 'webform_client_form_5373') {
+        $form['#validate'][]='club_details_delete_group_validate';
+
+        ## call extra function on submit
+        array_unshift($form['#submit'], 'club_details_civi_utilities_submit');
+    } else if($form_id == 'masquerade_block_1') {
+        $form['#https'] = TRUE;
+    }
+}
+
+function club_details_add_member_validate($form,&$form_state) {
+    ## get form fields for additional processing beyond civi update
+    $club_id = $form_state['values']['submitted']['club_id'];
+    $first_name = $form_state['values']['submitted']['first_name'];
+    $last_name = $form_state['values']['submitted']['last_name'];
+    $address1 = $form_state['values']['submitted']['address_1'];
+    $address2 = $form_state['values']['submitted']['address_2'];
+    $city = $form_state['values']['submitted']['city'];
+    $state = $form_state['values']['submitted']['state'];
+    $province = $form_state['values']['submitted']['province'];
+    $country = $form_state['values']['submitted']['country'];
+    $postal_code = $form_state['values']['submitted']['postal_code'];
+    $mobile_phone = $form_state['values']['submitted']['mobile_phone'];
+    $home_phone = $form_state['values']['submitted']['home_phone'];
+    $email = $form_state['values']['submitted']['email'];
+
+    // address validation
+    if ( !empty($address1) ) {
+        if ( empty($city) ) {
+            form_set_error('city',"Please enter a city if you're adding an address");
+        } elseif (empty($postal_code)) {
+            form_set_error('city',"Please enter a postal code if you're adding an address");
+        } elseif (empty($state) && empty($province)) {
+            form_set_error('city',"Please select a state if you're adding an address");
+        } elseif (empty($country)) {
+            form_set_error('city',"Please select a country if you're adding an address");
+        }
+    }
+}
+
+function club_details_user_access() {
+
+    if (!user_is_logged_in()) {
+        return false;
+    }
+    if (current_path() == 'club_details') {
+        return true;
+    }
+
+    global $contact_id;
+    global $user;
+    global $club_details_permissions;
+
+    $club_details_permissions = array(
+        'admin' => false,
+        'international_read' => false,
+        'international_update' => false,
+        'regional_read' => array(),
+        'regional_update' => array(),
+        'club_read' => array(),
+        'club_update' => array(),
+    );
+/*** no longer applies for dynamic menu item logic
+    if ((arg(0) != 'club_details') && (arg(0) != 'user') && (!( (arg(0) == 'node') && ( (arg(1) == EDIT_WEBFORM_ID) || (arg(1) == false) ) ) )) {
+        $arg = arg(0);
+        return false;
+    }
+*/
+    if (!defined('CIVICRM_SETTINGS_PATH')) civicrm_initialize();
+
+    $contact_id = club_details_get_civi_contact_id();
+    if (!$contact_id) {
+        // Interferes with miniOrange 2FA authentication
+        // drupal_set_message("error4: civi_contact_id not found in session");
+        return false;
+    }
+
+    // always let admin see these pages
+    if (in_array('administrator', $user->roles)) {
+        $club_details_permissions['admin'] = true;
+        return true;
+    } else {
+        $iperm = club_details_check_international($contact_id);
+        if ($iperm == 'update') {
+            $club_details_permissions['international_update'] = true;
+            return true;
+        } elseif ($iperm == 'read') {
+            $club_details_permissions['international_read'] = true;
+            return true;
+        } elseif (club_details_check_regional($contact_id)) {
+            return true;
+        } elseif (club_details_check_club_member_permission()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function club_details_check_international($contact_id) {
+    global $user;
+    if (in_array('International Officer', $user->roles)) {
+        $sql = "select international_access_124 as permission
+            from civicrm_relationship cr
+            inner join civicrm_value_international_position_3 i
+            on cr.id = i.entity_id
+            and cr.end_date is null
+            where cr.contact_id_a = $contact_id";
+
+        $access = array('read', 'update');
+        $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+        while ($dao->fetch() && $dao->N) {
+            if (in_array($dao->permission, $access)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+function club_details_check_regional($contact_id) {
+  // check if logged-in user is an officer of any region
+  global $club_details_permissions;
+
+  // use end_date is null to ensure that officer status is still active
+  $sql = "SELECT relm.contact_id_b as region_id, region_access_123 as permission
+    FROM civicrm_relationship relm
+    inner join civicrm_value_regional_position_2 rpos
+    on relm.id = rpos.entity_id
+    WHERE relm.contact_id_a = $contact_id
+    and relm.relationship_type_id = 63
+    and relm.end_date is null";
+  $result = false;
+  $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+  if ($dao->fetch() && $dao->N) {
+    if ($dao->permission == 'update') {
+        $club_details_permissions['regional_update'][$dao->region_id] = true;
+        $result = true;
+    } elseif ($dao->permission == 'read') {
+        $club_details_permissions['regional_read'][$dao->region_id] = true;
+        $result = true;
+    }
+  }
+  $dao->free();
+  return $result;
+}
+
+function club_details_check_club_member_permission() {
+  global $user;  // required to access the user's roles
+  $contact_id = club_details_get_civi_contact_id();
+  if (!$contact_id) {
+    drupal_set_message("error5: civi_contact_id not found in session");
+  }
+  if (in_array('administrator', $user->roles)) {
+    return true;
+  }
+  if ((arg(0) == 'node') && (arg(1) == EDIT_WEBFORM_ID)) {
+      if (isset($_REQUEST['cid1'])) {
+        return club_details_check_permissions_member($_REQUEST['cid1'], $contact_id);
+      }
+      return true;
+  }
+
+  if (! in_array(arg(1), array('member', 'club'))) {
+    return true;
+  } else {
+    if (arg(1) == 'member') {
+      return club_details_check_permissions_member(arg(2), $contact_id);
+    } elseif (arg(1) == 'club') {
+      return club_details_check_permissions_club(arg(2), $contact_id);
+    } else {
+      return false;
+    }
+  }
+}
+
+function club_details_check_permissions_member($member_id, $user_contact_id) {
+  // get member's club and region for comparison to logged in user
+  $sql = "SELECT m.id member_id, c.id club_id, c.display_name club_name, r.id region_id, r.display_name region_name
+      FROM `civicrm_contact` m
+      inner join civicrm_relationship relm
+      on m.id = relm.contact_id_a
+      inner join civicrm_contact c
+      on relm.contact_id_b = c.id
+      inner join civicrm_relationship relc
+      on c.id = relc.contact_id_a
+      inner join civicrm_contact r
+      on relc.contact_id_b = r.id
+      WHERE relm.relationship_type_id = 10
+      AND relc.relationship_type_id = 11
+      AND m.id = $member_id
+      AND c.is_deleted <> 1
+      AND m.is_deleted <> 1
+      ORDER BY m.sort_name";
+  $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+
+  if ($dao->fetch() && $dao->N) {
+    $member_club_id = $dao->club_id;
+    $member_club = $dao->club_name;
+    $member_region_id = $dao->region_id;
+    $member_region = $dao->region_name;
+    if (!PageParams::$member_belongs_message) {
+        drupal_set_message("Member belongs to club $member_club ($member_club_id) and region $member_region ($member_region_id)", "status");
+        PageParams::$member_belongs_message = true;
+    }
+  } else {
+    $dao->free();
+    return false;
+  }
+  // check if logged-in user is an officer of the same club
+  // use end_date is null to ensure that officer status is still active
+  $sql = "SELECT m.id member_id
+      FROM `civicrm_contact` m
+      inner join civicrm_relationship relm
+      on m.id = relm.contact_id_a
+      WHERE relm.relationship_type_id = 62
+      AND relm.contact_id_b = $member_club_id
+      AND m.id = $user_contact_id
+      AND relm.end_date is null
+      AND m.is_deleted <> 1";
+  $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+  if ($dao->fetch() && $dao->N) {
+    ### drupal_set_message("Permission Granted: You are an officer of $member_club", "status");
+    $dao->free();
+    return true;
+  } else {
+    $dao->free();
+    drupal_set_message("You are not an officer of $member_club.  Checking region...", "status");
+  }
+  // check if logged-in user is an officer of the user's region
+  // use end_date is null to ensure that officer status is still active
+  $sql = "SELECT m.id member_id
+      FROM `civicrm_contact` m
+      inner join civicrm_relationship relm
+      on m.id = relm.contact_id_a
+      WHERE relm.relationship_type_id = 63
+      AND relm.contact_id_b = $member_region_id
+      AND m.id = $user_contact_id
+      AND relm.end_date is null
+      AND m.is_deleted <> 1";
+  $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+  if ($dao->fetch() && $dao->N) {
+    ### drupal_set_message("Permission Granted: You are an officer of $member_region", "status");
+    $dao->free();
+    return true;
+  } else {
+    drupal_set_message("Permission Denied: You are not an officer of $member_region", "warning");
+    $dao->free();
+    return false;
+  }
+}
+
+function club_details_check_permissions_club($club_id, $user_contact_id) {
+  global $club_details_permissions;
+
+  // get member's club and region for comparison to logged in user
+  $sql = "SELECT c.id club_id, c.display_name club_name, r.id region_id, r.display_name region_name
+    FROM civicrm_contact c
+    inner join civicrm_relationship relc
+    on c.id = relc.contact_id_a
+    AND relc.end_date is null
+    inner join civicrm_contact r
+    on relc.contact_id_b = r.id
+    AND relc.relationship_type_id = 11
+    AND relc.end_date is null
+    AND c.id = $club_id
+    AND c.is_deleted <> 1
+    AND r.is_deleted <> 1
+    ORDER BY c.sort_name";
+
+  $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+  if ($dao->fetch() && $dao->N) {
+    $member_club_id = $dao->club_id;
+    $member_club = $dao->club_name;
+    $member_region_id = $dao->region_id;
+    $member_region = $dao->region_name;
+  } else {
+     drupal_set_message("Club does not exist for id $club_id", "status");
+     return false;
+  }
+
+  // check if logged-in user is an officer of the same club
+  // use end_date is null to ensure that officer status is still active
+  $sql = "SELECT m.id member_id, club_access_125 as permission
+    FROM `civicrm_contact` m
+    inner join civicrm_relationship relm
+    on m.id = relm.contact_id_a
+    and relm.relationship_type_id = 62
+    inner join civicrm_value_club_position_5 cpos
+    on relm.id = cpos.entity_id
+    WHERE relm.contact_id_b = $member_club_id
+    AND m.id = $user_contact_id
+    AND relm.end_date is null
+    AND m.is_deleted <> 1";
+
+  $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+  if ($dao->fetch() && $dao->N) {
+    if ($dao->permission == 'update') {
+        $club_details_permissions['club_update'][$member_club_id] = true;
+        ### drupal_set_message("Permission Granted: You are an officer of $member_club with update permission", "status");
+        return true;
+    } elseif ($dao->permission == 'read') {
+        $club_details_permissions['club_read'][$member_club_id] = true;
+        ### drupal_set_message("Permission Granted: You are an officer of $member_club with read permission", "status");
+        return true;
+    }
+  } else {
+     drupal_set_message("You are not an officer of $member_club with read or update permission.  Checking region...", "status");
+  }
+  // check if logged-in user is an officer of the user's region
+  // use end_date is null to ensure that officer status is still active
+  $sql = "SELECT m.id member_id, region_access_123 as permission
+    FROM `civicrm_contact` m
+    inner join civicrm_relationship relm
+    on m.id = relm.contact_id_a
+    and relm.relationship_type_id = 63
+    and relm.end_date is null
+    inner join civicrm_value_regional_position_2 rpos
+    on relm.id = rpos.entity_id
+    WHERE relm.contact_id_b = $member_region_id
+    AND m.id = $user_contact_id
+    AND m.is_deleted <> 1";
+
+  $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+  if ($dao->fetch() && $dao->N) {
+    if ($dao->permission == 'update') {
+        $club_details_permissions['regional_update'][$member_region_id] = true;
+        ### drupal_set_message("Permission Granted: You are an officer of $member_region with update permission", "status");
+        return true;
+    } elseif ($dao->permission == 'read') {
+        $club_details_permissions['regional_read'][$member_region_id] = true;
+        ### drupal_set_message("Permission Granted: You are an officer of $member_region with read permission", "status");
+        return true;
+    }
+  } else {
+    drupal_set_message("Permission Denied: You are not an officer of $member_region with read or update permission", "warning");
+    return false;
+  }
+  $dao->free();
+  return true;
+}
+
+function club_details_user_offices($contact_id, &$first_club_id) {
+  $html = "Your Club/Region Relationships are as follows:<br>";
+  // check if logged-in user is an officer of any club
+  // use end_date is null to ensure that officer status is still active
+  $sql = "SELECT c.display_name, c.id as club_id
+    FROM `civicrm_contact` m
+    inner join civicrm_relationship relm
+    on m.id = relm.contact_id_a
+    inner join civicrm_contact c
+    on relm.contact_id_b = c.id
+    WHERE relm.relationship_type_id = 62
+    AND m.id = $contact_id
+    AND relm.end_date is null
+    AND m.is_deleted <> 1
+    AND c.is_deleted <> 1";
+  $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+  if ($dao->N) {
+    $clubs = array();
+    while ($dao->fetch() && $dao->N) {
+      $clubs[] = $dao->display_name;
+      if (empty($first_club_id)) {
+            $first_club_id = $dao->club_id;
+      }
+    }
+    $html .= "<blockquote>You are an officer of the following clubs: " . implode(",", $clubs) . "</blockquote>";
+  } else {
+    $html .= "You are not an officer of any clubs at this time<br>";
+  }
+  // check if logged-in user is an officer of any region
+  // use end_date is null to ensure that officer status is still active
+  $sql = "SELECT r.display_name
+    FROM `civicrm_contact` m
+    inner join civicrm_relationship rel
+    on m.id = rel.contact_id_a
+    inner join civicrm_contact r
+    on rel.contact_id_b = r.id
+    WHERE rel.relationship_type_id = 63
+    AND m.id = $contact_id
+    AND rel.end_date is null
+    AND m.is_deleted <> 1
+    AND r.is_deleted <> 1";
+  $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+  if ($dao->N) {
+    $regions = array();
+    while ($dao->fetch() && $dao->N) {
+      $regions[] = $dao->display_name;
+    }
+    $html .= "<blockquote>You are an officer of the following regions: " . implode(",", $regions) . "</blockquote>";
+  } else {
+    $html .= "You are not an officer of any region at this time<br>";
+  }
+  $dao->free();
+  return $html;
+}
+
+function club_details_page_build(&$page) {
+  $page['sidebar_second']['club_details'] = array(
+    '#pre_render' => array('club_details_pre_render'),
+    '#access' => true,
+    'club_details_drawer' => array(),
+  );
+}
+
+function club_details_router() {
+
+  drupal_add_js('jQuery(document).ready(function () { var Opera = (navigator.userAgent.match(/Opera|OPR\//) ? true : false); if(Opera){alert("Opera browser is not supported for this page.  Please try chrome or firefox"); window.location = "/"; }});', 'inline');
+
+  if (!defined('CIVICRM_SETTINGS_PATH')) civicrm_initialize();
+
+  ### include dependencies after civi init
+  require_once "club_officers.inc";
+  require_once "regional_officers.inc";
+
+  $contact_id = club_details_get_civi_contact_id();
+  if (!isset($contact_id)) {
+    drupal_set_message("error6: civi_contact_id not found in session");
+    drupal_goto("/");
+    return;
+  }
+
+  drupal_add_css(drupal_get_path('module', 'club_details') . '/club_details.css');
+
+  $html = '';
+  if (arg(1)) {
+    $html .=  '<a href="/club_details">&lt; Return to Region List</a> | ';
+  }
+  $html .= '<a id="view-perms" href="#">View Permissions</a><div id="perms" style="display:none;">';
+
+  global $user;
+  $first_club_id = null;
+  $is_admin = false;
+  $is_international_officer = false;
+  $is_regional_officer = false;
+
+  global $club_details_permissions;
+
+  if (in_array('administrator', $user->roles)) {
+    $is_admin = true;
+    $html .= "<blockquote>You are an administrator</blockquote>";
+  }
+  $iperm = club_details_check_international($contact_id);
+  $is_regional_officer = club_details_check_regional($contact_id);
+
+  if ($iperm != false) {
+    $is_international_officer = true;
+    $html .= "<blockquote>You are an international officer with $iperm contact management rights</blockquote>";
+  }
+  $html .= club_details_user_offices($contact_id, $first_club_id);
+  $html .= "</div>";
+
+  // main router block
+  $func = arg(1);
+  if (empty($func)) {
+
+    ### redirect club officers to their club pages if not admin, international or regional officer
+    if (!$is_admin && !$is_international_officer && !$is_regional_officer && !empty($first_club_id)) {
+        drupal_goto('https://fjmc.org/club_details/club/' . $first_club_id);
+        exit;
+    }
+
+    $html .= club_details_regions();
+  } else {
+    switch ($func) {
+      case 'region':
+        $html .= club_details_clubs(arg(2));
+        break;
+      case 'club':
+        $html .= club_details_members(arg(2));
+        break;
+      case 'member':
+        $html .= club_details_member(arg(2));
+        break;
+      case 'update':
+        $html .= club_details_update_member(arg(2));
+        break;
+      default:
+        $html .= "Cannot process club_details/$func";
+    }
+  }
+
+  return $html;
+}
+
+function club_details_get_civi_contact_id() {
+  if(civicrm_initialize()) {
+    return CRM_Core_Session::getLoggedInContactID();
+  }
+  return false;
+}
+
+function club_details_regions() {
+  $sql = "SELECT id, display_name FROM `civicrm_contact`
+    WHERE contact_sub_type = 'Region'
+    AND is_deleted <> 1
+    ORDER BY display_name";
+  $sql = "select cc.id,display_name from civicrm_contact cc, civicrm_value_region_detail_25 cr
+          where contact_sub_type ='Region'
+          and cc.id=cr.entity_id
+          and cr.active_region_126=1
+          AND is_deleted <> 1
+          order by sort_name";
+
+  $html = '';
+  $html .= '<h2>Select a Region</h2>';
+  $html .= '<div style="width:400px;height:400px;overflow:auto;">';
+  $html .= '<table>';
+
+  $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+  while($dao->fetch()){
+    $id = $dao->id;
+    $display_name = $dao->display_name;
+    $html .= '<tr><td><a href="/club_details/region/' . $id . '">' . $display_name . '</a></td></tr>';
+  }
+
+  $html .= '</table></div>';
+
+  $dao->free();
+  return $html;
+}
+
+function club_details_clubs($region_id) {
+  $sqlr = "SELECT display_name from civicrm_contact r
+            WHERE id = $region_id
+            AND is_deleted <> 1";
+
+  $dao = CRM_Core_DAO::executeQuery( $sqlr, array() );
+  $dao->fetch();
+  $region = $dao->display_name;
+  $dao->free();
+  $html = club_details_region_summary($region_id, $count);
+  $html = "<h2>$region ($count Active Clubs)</h2>" . $html;
+  $count = 0;
+  return $html;
+}
+
+function old_club_details_clubs($region_id) {
+
+  $sql = "SELECT c.id, c.display_name FROM `civicrm_contact` c
+    inner join civicrm_relationship rel
+    on c.id = rel.contact_id_a
+    inner join civicrm_contact r
+    on rel.contact_id_b = r.id
+    AND rel.relationship_type_id = 11
+    AND r.id = $region_id
+    AND c.is_deleted <> 1
+    AND r.is_deleted <> 1
+    inner join civicrm_value_extra_contact_info_1 x
+    on x.entity_id = c.id
+    WHERE fjmcaffil_19 = 1
+    ORDER BY c.display_name";
+  $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+  if (!$dao->N) {
+    $html .= '<tr><td>There are no active clubs in this region</td></tr>';
+  } else {
+    $clubs = $dao->N;
+    $html = "";
+    $html .= "<h2>Select a Club in $region ($clubs Total)</h2>";
+    $html .= '<div style="width:400px;height:400px;overflow:auto;">';
+    $html .= '<table>';
+
+    while($dao->fetch() && $dao->N){
+      $id = $dao->id;
+      $display_name = $dao->display_name;
+      $html .= '<tr><td><a href="/club_details/club/' . $id . '">' . $display_name . '</a></td></tr>';
+    }
+  }
+  $html .= '</table></div>';
+
+  $dao->free();
+}
+function club_details_members($club_id) {
+
+    if(!$club_id)drupal_goto("/club_details/");
+
+    $sqlcert = "select id, roster_updated_by_151, laster_roster_recieved_93
+    FROM civicrm_value_club_details_19 vcd
+    WHERE entity_id = $club_id
+    ORDER BY id desc limit 1";
+
+    $dao = CRM_Core_DAO::executeQuery( $sqlcert, array() );
+    $dao->fetch();
+    $certified_by = is_null($dao->roster_updated_by_151) || (strlen($dao->roster_updated_by_151) == 0) ? 'unknown' : $dao->roster_updated_by_151;
+    $certified_on = date('Y-m-d', strtotime($dao->laster_roster_recieved_93));
+    $certDate = new DateTime($dao->laster_roster_recieved_93);
+    if (date('n') >= 7) {
+        $strDate = 'July 1 ' . date('Y');
+    } else {
+        $strDate = 'July 1 last year';
+    }
+    $lastStartDate = new DateTime($strDate);
+    $interval = $lastStartDate->diff($certDate);
+    $interval = $interval->format("%R%a");
+    if (strpos($interval,'+') !== false) {
+        $interval = str_replace('+', '', $interval);
+        $diffDays = " or $interval days after last fiscal year started";
+        $cert_html = "Last Certified by $certified_by on $certified_on $diffDays<br/>";
+        $certified = true;
+    } else {
+        $interval = str_replace('-', '', $interval);
+        $diffDays = " or $interval days before last fiscal year started";
+        $certified = false;
+        $cert_html = "Last Certified by $certified_by on $certified_on $diffDays<br/>";
+        $cert_html .= '<label><b>Certify This Roster</b> <input name="certify_roster" id="certify_roster" type="checkbox" /> &nbsp;Your club roster needs to be reviewed annually.  Once you complete your review, please check this box and save the page.</label>';
+    }
+
+    $sqllastu = "
+    FROM log_civicrm_value_club_details_19 vcd
+    WHERE entity_id = $club_id
+    AND roster_updated_by_151 is not null;
+    ORDER BY id desc limit 1";
+
+    ## don't do this until logs get trimmed
+    ## $dao = CRM_Core_DAO::executeQuery( $sqllastu, array() );
+    ## $dao->fetch();
+    ## $last_certified = ($dao->N) ? $dao->log_date : false;
+
+    $sqlclub = "SELECT c.id club_id, c.display_name club_name, r.id region_id, r.display_name region_name
+    FROM civicrm_contact c
+    inner join civicrm_relationship relc
+    on c.id = relc.contact_id_a
+    inner join civicrm_contact r
+    on relc.contact_id_b = r.id
+    AND relc.relationship_type_id = 11
+    AND c.id = $club_id
+    AND c.is_deleted <> 1
+    AND r.is_deleted <> 1
+    WHERE IFNULL(c.is_deceased,0) = 0
+    ORDER BY c.sort_name";
+
+    $dao = CRM_Core_DAO::executeQuery( $sqlclub, array() );
+    $dao->fetch();
+    $club = $dao->club_name;
+    $region_id = $dao->region_id;
+    $region = $dao->region_name;
+
+    $can_update = false;
+    $can_read = false;
+    global $club_details_permissions;
+
+    if ($club_details_permissions['admin'] ||
+        $club_details_permissions['international_update'] ||
+        array_key_exists($region_id, $club_details_permissions['regional_update']) ||
+        array_key_exists($club_id, $club_details_permissions['club_update'])
+    ) {
+        $can_update = true;
+    } elseif ($club_details_permissions['international_read'] ||
+        array_key_exists($region_id, $club_details_permissions['regional_read']) ||
+        array_key_exists($club_id, $club_details_permissions['club_read'])
+    ) {
+        $can_read = true;
+    }
+    if (!$can_update && !$can_read) {
+        return "<p>Permission Denied</p>";
+    }
+
+    if ($club_id == 'modal_forms') return;
+
+    $sql = "SELECT count(DISTINCT(ccb.`id`)) as num_members
+        FROM civicrm_relationship cr
+        left join civicrm_contact ccb on ccb.`id`=cr.`contact_id_a` and `end_date` is null
+        left join civicrm_contact club on club.`id`=cr.`contact_id_b` and club.`contact_type` = 'Organization' AND club.`contact_sub_type` = 'Club'
+        left join civicrm_address ca on ca.`contact_id` = cr.`contact_id_a` AND ca.`id` = (select subaddr.id from civicrm_address subaddr where subaddr.contact_id=ca.contact_id  and ca.is_primary = 1 limit 0,1)
+        left join civicrm_email e on e.contact_id = cr.contact_id_a AND e.id = (select subemail.id from civicrm_email subemail where subemail.contact_id=e.contact_id limit 0,1)
+        left join civicrm_phone cp on cp.contact_id = cr.contact_id_a AND cp.id = (select subphone.id from civicrm_phone subphone where subphone.contact_id=cp.contact_id  and cp.is_primary = 1 limit 0,1)
+        left join civicrm_state_province sp on state_province_id = sp.id
+        left join civicrm_country cnty on  ca.country_id = cnty.id
+        left join civicrm_option_value `options` on `options`.`id` = ccb.prefix_id OR `options`.`id` = ccb.`suffix_id`
+        left join civicrm_option_value options1 on options1.`value` = ccb.suffix_id AND options1.option_group_id = 7
+        WHERE cr.contact_id_b = $club_id
+        AND cr.is_active = 1
+        AND ccb.is_deleted <> 1
+        AND cr.relationship_type_id = 10
+        AND end_date is null
+        AND IFNULL(ccb.is_deceased,0) = 0";
+    $dao->free();
+    $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+    $dao->fetch();
+    $num_members = $dao->num_members;
+
+    $sql = "SELECT DISTINCT(ccb.id) as `contact_id`, ccb.`first_name`,ccb.`last_name`, club.`id` as club_contact_id, ccb.`prefix_id`, ccb.`suffix_id`, ccb.`is_deceased`, `options`.`label` contact_prefix,`options1`.`label` contact_suffix, ccb.`display_name`, ccb.`id`, `street_address`, `city`, cnty.`id` as countryid, cnty.`name` as country, `abbreviation`, `postal_code`, eprim.email as email, cpl.`phone` AS landline, cpl.`is_primary` AS landline_is_primary, cpm.`phone` AS mobile, cr.`is_active`
+        FROM civicrm_relationship cr
+        left join civicrm_contact ccb on ccb.id=cr.contact_id_a and end_date is null
+        left join civicrm_contact club on club.`id`=cr.`contact_id_b` and club.`contact_type` = 'Organization' AND club.`contact_sub_type` = 'Club'
+        left join civicrm_address ca on ca.contact_id = cr.contact_id_a AND ca.is_primary = 1
+        left join civicrm_email eprim ON eprim.contact_id = cr.contact_id_a
+                                AND eprim.is_primary = 1 AND eprim.location_type_id = 3  -- only consider Main location type
+        left join (select p.`id`, p.`contact_id`, p.`phone`, p.`is_primary`, p.`phone_type_id`
+          from civicrm_phone p join
+            (select contact_id, min(id) as `id` from civicrm_phone
+            where phone_type_id = 1 and location_type_id = 3    -- only fetch Landline phone of location type Main
+            group by contact_id) pn
+          on p.id = pn.id) cpl
+        on cpl.`contact_id` = cr.`contact_id_a` AND cpl.phone_type_id = 1
+
+        left join (select p.`id`, p.`contact_id`, p.`phone`, p.`phone_type_id`
+          from civicrm_phone p join
+            (select contact_id, max(id) as `id` from civicrm_phone
+            where phone_type_id = 2 and location_type_id = 3    -- only fetch Mobile phone of location type Main
+            group by contact_id) pn
+          on p.id = pn.id) cpm
+        on cpm.`contact_id` = cr.`contact_id_a` AND cpm.phone_type_id = 2
+
+        left join civicrm_state_province sp on `state_province_id` = sp.id
+        left join civicrm_country cnty on  ca.`country_id` = cnty.id
+        left join civicrm_option_value `options` on `options`.`value` = ccb.`prefix_id` AND `options`.`option_group_id` = 6
+        left join civicrm_option_value `options1` on `options1`.`value` = ccb.`suffix_id` AND `options1`.`option_group_id` = 7
+        WHERE cr.`contact_id_b` = $club_id
+        AND ccb.`is_deleted` <> 1
+        AND cr.`relationship_type_id` = 10
+        AND `end_date` is null
+        AND IFNULL(ccb.`is_deceased`,0) = 0
+        ORDER BY ccb.`sort_name`";
+        //AND is_active = 1 group by cp.contact_id, sp.id,ca.contact_id,ccb.id,cr.contact_id_a
+    $dao->free();
+    $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+
+    $html = "";
+    $html = "<h2>Details for Club $club in $region</h2>";
+
+    $_SESSION['current_club'] = $club_id;
+    $import_string = '';
+    /*if(user_access('administer users')) {
+        $upload_form = drupal_get_form('club_details_form');
+        $upload_doc = drupal_render($upload_form);
+        $import_string = '<h3 class="import-export-heading">Import Rosters</h3>'
+                       . '<div id="doc-upload-wrapper" style="float:left; margin:5px 0;">'.$upload_doc.'</div>';
+    }*/
+
+    if ($can_update) {
+        $html .= '<div id=\'custom_messages\'></div>
+        <div style="margin-bottom:5px;">
+          <div class="club-details-actions">
+            <div style="float:left;">' . $num_members . ' Active Members</div>
+            <div style="float:left; padding-left:50px;padding-bottom:3px">
+                <a class="button" onclick="document.getElementById(' . "'update_form'" . ').submit();">Save Changes</a>
+            </div>
+            <div style="float:right; padding-right:20px;">
+                <a class="button" href="/content/add-club-member?club_id=' . $club_id . '">Add New Member</a>
+            </div>
+          </div>
+          <div class="club-details-actions import-export-divider">
+            <div style="border:0px; width:300px; float:left;">
+              <h3 class="import-export-heading">Import Roster</h3>
+              <div style="margin:5px 0;">
+                  <a class="button" href="/club/'.$club_id.'/import ">Import Roster</a>
+              </div>
+            </div>
+            <div style="border:0px; width:200px; float:left;">
+              <h3 class="import-export-heading">Download Roster</h3>
+              <div style="margin:5px 0;">
+                  <a class="button" href="/club_details/club/'.$club_id.'?format=xlsx">Download Roster</a>
+              </div>
+              '.$import_string.'
+            </div>
+          </div>
+
+        </div>';
+    } else {
+        $html .= '
+        <div style="margin-bottom:5px;">
+            <div style="float:left">' . $dao->N . ' Members</div>
+        </div>';
+    }
+    $html .= '<div style="clear:both;"></div>';
+
+    if(isset($_GET['format']) && $_GET['format'] != '') {
+      $html = _club_details_get_member_export($dao, $club);
+      $dao->free();
+    } else {
+      $html .= '<form action="/club_details/update/active" method="post" id="update_form" name="update_form">';
+      $html .= '<div style="padding-left:10px;padding-right:10px">' . $cert_html . '</div>';
+      $html .= '<div class="fjmc_member_div">';
+      $html .= club_details_get_member_table($dao, $club_id, $can_update);
+      $html .= '<input type="hidden" name="club_id" value="' . $club_id . '">';
+      $html .= '</div></form>';
+      $dao->free();
+    }
+    return $html;
+}
+
+function club_details_set_certified($club_id, $username, $email) {
+    $sqlcert = "select cd.id, c.display_name as club_name, cd.roster_updated_by_151
+    FROM civicrm_value_club_details_19 cd
+    JOIN civicrm_contact c on c.id = cd.entity_id
+    WHERE entity_id = $club_id
+    ORDER BY id desc limit 1";
+
+    $dao = CRM_Core_DAO::executeQuery( $sqlcert, array() );
+    $dao->fetch();
+
+    $vid = $dao->id;
+    $club_name = $dao->club_name;
+    $now = date('Y-m-d');
+    $sqlcertupdate = "UPDATE civicrm_value_club_details_19
+        SET roster_updated_by_151 = '$username',
+            laster_roster_recieved_93 = '$now'
+        WHERE id = $vid";
+
+    $dao = CRM_Core_DAO::executeQuery( $sqlcertupdate, array() );
+
+    // get logged_in user full name
+    $cid = CRM_Core_Session::singleton()->getLoggedInContactID();
+    $sql = "select display_name from civicrm_contact where id = $cid";
+    $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+    $dao->fetch();
+    $fullname = $dao->display_name;
+    $dao->free();
+
+    // notify chaverot admin that club got certified
+    $html = "<p>A club roster was certified in Chaverot for
+        <a href=\"https://www.fjmc.org/civicrm/contact/view?reset=1&cid=$club_id\">$club_name</a><br>
+        by $fullname ($username) $email<br>";
+
+    $mailParams = array(
+        'from' => '"FJMC Dues Committee" <chaverot@fjmc.org>',
+        'toEmail' => 'chaverot@fjmc.org',
+        'subject' => 'Chaverot club certified',
+        'html' => $html,
+    );
+    CRM_Utils_Mail::send($mailParams);
+}
+
+function club_details_update_member($action) {
+   global $user;
+
+   if ($action == 'active') {
+        if (strtoupper($_SERVER['REQUEST_METHOD']) != "POST") {
+            drupal_set_message("Access Denied.  POST required");
+            return;
+        } else {
+            $club_id = $_POST['club_id'];
+            if (isset($_POST['certify_roster'])) {
+                club_details_set_certified($club_id, $user->name, $user->mail);
+            }
+            if (isset($_POST['club_id'])) {
+                $prev_active = explode('|', $_POST['prev_active']);
+                $sql_activate = "update civicrm_relationship left join civicrm_value_club_details_19 on
+                		civicrm_relationship.contact_id_b = civicrm_value_club_details_19.entity_id
+                        set is_active = 1, start_date = '".date('Ymd')."', end_date = null,
+                        laster_roster_recieved_93 = '".date('Y-m-d H:i:s')."'
+                        where contact_id_a = :a
+                        and contact_id_b = $club_id
+                        and relationship_type_id = 10";
+                $sql_deactivate = "update civicrm_relationship left join civicrm_value_club_details_19 on
+                        civicrm_relationship.contact_id_b = civicrm_value_club_details_19.entity_id
+                        set is_active = 0, laster_roster_recieved_93 = '".date('Y-m-d H:i:s')."'
+                        where contact_id_a = :a
+                        and contact_id_b = $club_id
+                        and relationship_type_id = 10";
+                $sql_inactive_reason = "
+DELETE FROM civicrm_value_chaverot_61
+ WHERE entity_id IN (
+         SELECT id
+           FROM civicrm_relationship
+          WHERE contact_id_a = :a AND contact_id_b = $club_id AND relationship_type_id = 10
+       )";
+                if(isset($_POST['acb'])){
+	                foreach ($_POST['acb'] as $id) {
+	                    if (!in_array($id, $prev_active)) {
+	                        // set member to active
+	                        $dao = CRM_Core_DAO::executeQuery( str_replace(':a', $id, $sql_activate) );
+	                        $dao = CRM_Core_DAO::executeQuery( str_replace(':a', $id, $sql_inactive_reason) );
+	                    }
+	                }
+                }
+                if(isset($_POST['prev_active']) && $_POST['prev_active'] != '') {
+	                foreach ($prev_active as $id) {
+	                    if ((is_array($_POST['acb']) && !in_array($id, $_POST['acb'])) || empty($_POST['acb'])) {
+	                        // set member to inactive
+	                        $dao = CRM_Core_DAO::executeQuery( str_replace(':a', $id, $sql_deactivate) );
+	                    }
+	                }
+                }
+                drupal_set_message("Members Updated");
+                drupal_goto("/club_details/club/$club_id");
+            } else {
+                drupal_set_message("Error: Required fields not set");
+                return;
+            }
+        }
+    } elseif (($action == 'member') && (!is_null(arg(3)) && is_numeric(arg(3)))) {
+        return 'coming soon';
+    }
+}
+
+function club_details_club_stats($dao) {
+    $maxRows_clubinfo = 999;
+    $pageNum_clubinfo = 0;
+    if (isset($_GET['pageNum_clubinfo'])) {
+      $pageNum_clubinfo = $_GET['pageNum_clubinfo'];
+    }
+    $startRow_clubinfo = $pageNum_clubinfo * $maxRows_clubinfo;
+
+    $query_clubinfo = "SELECT civicrm_contact.contact_sub_type,
+        civicrm_value_extra_contact_info_1.club_id_7,
+        civicrm_contact.addressee_display,civicrm_value_club_details_19.club_members_2013_92,
+        date_format( civicrm_value_club_details_19.laster_roster_recieved_93, '%m/%d/%y' ) as list_date,
+        civicrm_value_club_details_19.dues_rate_98, civicrm_value_club_details_19.regional_dues_rate_99,
+        civicrm_value_club_details_19.number_of_club_members_104,
+        civicrm_value_club_details_19.current_billing_international_105,
+        civicrm_value_club_details_19.current_billing_region_106,
+        civicrm_value_club_details_19.past_due_international_107,
+        civicrm_value_club_details_19.past_due_regional_108,
+        civicrm_value_club_details_19.adjustment_international_109,
+        civicrm_value_club_details_19.adjustment_regional_110,
+        civicrm_value_club_details_19.paid_to_date_international_111,
+        civicrm_value_club_details_19.paid_to_date_regional_112,
+        civicrm_value_club_details_19.current_balance_internationla_113,
+        civicrm_value_club_details_19.total_balance_114,
+        civicrm_value_club_details_19.current_balance_regional_115,
+        civicrm_value_club_details_19.number_of_members_billed_for_116,
+        civicrm_value_club_details_19.paid_prior_regional_117,
+        civicrm_value_club_details_19.paid_prior_international_118,
+        civicrm_value_club_details_19.adjustment_prior_international_119,
+        civicrm_value_club_details_19.adjustment_prior_regional_120,
+        civicrm_value_club_details_19.past_due_balance_international_121,
+        civicrm_value_club_details_19.past_due_balance_regional_122,
+        civicrm_contact.id
+    FROM civicrm_contact,
+        civicrm_value_extra_contact_info_1,
+        civicrm_value_club_details_19
+    WHERE civicrm_contact.contact_sub_type= 'club'
+        AND civicrm_contact.is_deleted <> 1
+        AND fjmcaffil_19=1
+        AND civicrm_value_extra_contact_info_1.entity_id = civicrm_contact.id
+        AND civicrm_value_club_details_19.entity_id=civicrm_contact.id
+    ORDER BY civicrm_value_extra_contact_info_1.club_id_7";
+    $query_limit_clubinfo = sprintf("%s LIMIT %d, %d", $query_clubinfo, $startRow_clubinfo, $maxRows_clubinfo);
+    $dao = CRM_Core_DAO::executeQuery( $query_limit_clubinfo, array() );
+    $dao->fetch();
+    $row_clubinfo = mysql_fetch_assoc($clubinfo);
+
+    if (isset($_GET['totalRows_clubinfo'])) {
+      $totalRows_clubinfo = $_GET['totalRows_clubinfo'];
+    } else {
+      $all_clubinfo = mysql_query($query_clubinfo);
+      $totalRows_clubinfo = mysql_num_rows($all_clubinfo);
+    }
+    $totalPages_clubinfo = ceil($totalRows_clubinfo/$maxRows_clubinfo)-1;
+}
+
+function club_details_get_member_table($dao, $club_id, $can_update) {
+    $private_clubs = array(162);
+    $prev_active = array();
+    $html = '<table class="fjmc_member_table">
+    <thead>
+    <tr>
+      <th scope="col">Name</th>
+      <th scope="col">Address</th>
+      <th scope="col">City</th>
+      <th scope="col">State</th>
+      <th scope="col">Postal Code</th>
+      <th scope="col">Email</th>
+      <th scope="col" width="150px">Phone</th>
+      <th scope="col">Active</th>
+    </tr></thead><tbody style="height:300px; overflow:auto;">';
+  while($dao->fetch()){
+    $active = $dao->is_active ? 'Yes' : 'No';
+    $checked = $dao->is_active ? 'checked' : '';
+    $row = "<tr>";
+      if ( $can_update && !in_array($club_id, $private_clubs) ) {
+        $row .= "<td>" . _club_details_make_link($dao->display_name, $dao->id, $club_id) . "</td>";
+      } else {
+        $row .= "<td>{$dao->display_name}</td>";
+      }
+    if ( in_array($club_id, $private_clubs) ) {
+       $row .= "
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>";
+          if ($dao->is_active) $row .= '<td>'; else $row .= '<td class="redbk">';
+          $row .= $active . "</td>
+        </tr>";
+    } else {
+    $row .= "
+          <td>{$dao->street_address}</td>
+          <td>{$dao->city}</td>
+          <td>{$dao->abbreviation}</td>
+          <td>{$dao->postal_code}</td>
+          <td>{$dao->email}</td>
+          <td>home: {$dao->landline}<br />cell: {$dao->mobile}</td>";
+
+          if ($dao->is_active) $row .= '<td>'; else $row .= '<td class="redbk">';
+          if ($can_update) {
+            $row .= '<input type="checkbox" name="acb[]" value="' . $dao->id . '" ' . $checked . '>';
+          } else {
+            $row .= $active;
+          }
+          $row .= '</td>
+        </tr>';
+    }
+    $html .= $row;
+
+    if ($dao->is_active) $prev_active[] = $dao->id;
+  }
+  $html .= "</tbody></table>";
+  $html .= '<input type="hidden" value="' . implode('|', $prev_active) . '" name="prev_active">';
+  return $html;
+}
+
+function club_details_get_civi_member($member_id) {
+  $sql = "SELECT m.*, e.email FROM `civicrm_contact` m
+    LEFT JOIN civicrm_email e
+    ON m.id = e.contact_id
+    WHERE m.is_deleted <> 1
+    AND e.is_primary = 1
+    AND m.id = $member_id";
+  $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+  $dao->fetch();
+  $member = $dao;
+
+  $dao->free();
+  return $member;
+}
+
+function club_details_member($member_id) {
+  $member = club_details_get_civi_member($member_id);
+  $html = "";
+  $html .= '<h2>Member Details</h2>';
+  $html .= '<div class="fjmc_member_div">';
+  $html .= '<table class="fjmc_member_table">';
+
+  $id = $dao->id;
+  $display_name = $dao->sort_name;
+  $email = $dao->email;
+  $html .= "<tr><td>$id</td> <td>$display_name</td> <td>$email</td></tr>";
+
+  $html .= '</table></div>';
+  return $html;
+}
+function club_details_get_clubs_for_region($region_id) {
+
+    $sql = "SELECT
+    club.addressee_display,
+    club.id
+    FROM civicrm_contact club,
+    civicrm_contact region,
+    civicrm_relationship,
+    civicrm_value_extra_contact_info_1 e
+
+    WHERE region.id = $region_id
+    AND contact_id_b=region.id
+    AND contact_id_a=club.id
+    AND e.fjmcaffil_19=1
+    AND club.is_deleted <> 1
+    AND region.is_deleted <> 1
+    AND e.entity_id = club.id
+    ORDER BY club.addressee_display";
+
+    $dao = CRM_Core_DAO::executeQuery( $sql, CRM_Core_DAO::$_nullArray);
+
+    $clubs = array();
+    while($dao->fetch()){
+        $clubs[$dao->id] = $dao->addressee_display;
+    }
+    $dao->free();
+    return $clubs;
+}
+
+function club_details_clubs_in_region($region_id, &$count) {
+
+    $clubs = club_details_get_clubs_for_region($region_id);
+    $count = count($clubs);
+    $html = '
+    <style type="text/css">
+        #table_region_summary {
+            background-color: #FFFFEE;
+            width:980px;
+            max-width:1050px;
+        }
+        #table_region_summary tbody td{
+            border: 1px solid black;
+            text-align: right;
+        }
+    </style>
+    <hr>
+    <div style="margin-top:10px;width:600px;">
+    <table border="0" cellspacing="0" cellpadding="1" align="center">
+      <thead><tr>
+        <th>Club</th>
+        <th>View Members</th>
+      </tr></thead><tbody>';
+
+    foreach ($clubs as $id => $name) {
+        $html .= '<tr>
+          <td>' . $name . '</td>
+          <td><a href="/club_details/club/' . $id . '">Members</a></td>
+          </tr>';
+    }
+    $html .= '</tbody></table></div>';
+    return $html;
+}
+
+function _mrj_region_summary_mysql_query($region_id){
+    $sql = "SELECT club.id, club.addressee_display
+    FROM civicrm_contact club,
+    civicrm_value_extra_contact_info_1,
+    civicrm_value_club_details_19,
+    civicrm_contact region,
+    civicrm_relationship
+    WHERE region.id = $region_id
+    and contact_id_b=region.id
+    and contact_id_a=club.id
+    and mrj_affil_189=1
+    AND civicrm_value_extra_contact_info_1.entity_id = club.id
+    AND civicrm_value_club_details_19.entity_id=club.id
+    AND club.is_deleted <> 1
+    AND region.is_deleted <> 1
+    ORDER BY club.addressee_display";
+    return $sql;
+}
+function _region_summary_mysql_query($region_id){
+    $sql = "SELECT club.contact_sub_type,
+    club.id as club_id,
+    civicrm_value_extra_contact_info_1.club_id_7,
+    club.addressee_display,
+    civicrm_value_club_details_19.club_members_2013_92,
+    date_format( civicrm_value_club_details_19.laster_roster_recieved_93, '%m/%d/%y' ) as list_date,
+    civicrm_value_club_details_19.dues_rate_98,
+    civicrm_value_club_details_19.regional_dues_rate_99,
+    civicrm_value_club_details_19.number_of_club_members_104,
+    civicrm_value_club_details_19.current_billing_international_105,
+    civicrm_value_club_details_19.current_billing_region_106,
+    civicrm_value_club_details_19.past_due_international_107,
+    civicrm_value_club_details_19.past_due_regional_108,
+    civicrm_value_club_details_19.adjustment_international_109,
+    civicrm_value_club_details_19.adjustment_regional_110,
+    civicrm_value_club_details_19.paid_to_date_international_111,
+    civicrm_value_club_details_19.paid_to_date_regional_112,
+    civicrm_value_club_details_19.current_balance_internationla_113,
+    civicrm_value_club_details_19.total_balance_114,
+    civicrm_value_club_details_19.current_balance_regional_115,
+    civicrm_value_club_details_19.number_of_members_billed_for_116,
+    civicrm_value_club_details_19.paid_prior_regional_117,
+    civicrm_value_club_details_19.paid_prior_international_118,
+    civicrm_value_club_details_19.adjustment_prior_international_119,
+    civicrm_value_club_details_19.adjustment_prior_regional_120,
+    civicrm_value_club_details_19.past_due_balance_international_121,
+    civicrm_value_club_details_19.past_due_balance_regional_122,
+    club.id
+    FROM civicrm_contact club,
+    civicrm_value_extra_contact_info_1,
+    civicrm_value_club_details_19,
+    civicrm_contact region,
+    civicrm_relationship
+    WHERE region.id = $region_id
+    and contact_id_b=region.id
+    and contact_id_a=club.id
+    and fjmcaffil_19=1
+    AND civicrm_value_extra_contact_info_1.entity_id = club.id
+    AND civicrm_value_club_details_19.entity_id=club.id
+    AND club.is_deleted <> 1
+    AND region.is_deleted <> 1
+    ORDER BY club.addressee_display";
+    //ORDER BY civicrm_value_extra_contact_info_1.club_id_7";
+    return $sql;
+}
+
+function club_details_mrj_region_summary($region_id, &$count) {
+
+    $can_update = false;
+    $can_read = false;
+
+    global $club_details_permissions;
+    if ($club_details_permissions['admin'] ||
+        $club_details_permissions['international_update'] ||
+        array_key_exists($region_id, $club_details_permissions['regional_update'])
+    ) {
+        $can_update = true;
+    } elseif ($club_details_permissions['international_read'] ||
+        array_key_exists($region_id, $club_details_permissions['regional_read'])
+    ) {
+        $can_read = true;
+    }
+    if (!$can_update && !$can_read) {
+        return club_details_clubs_in_region($region_id, $count);
+    }
+
+    $html = '';
+
+    $dao = CRM_Core_DAO::executeQuery( _mrj_region_summary_mysql_query($region_id), CRM_Core_DAO::$_nullArray);
+    $count = $dao->N;
+    $html = '
+    <style type="text/css">
+        #table_region_summary {
+            background-color: #FFFFEE;
+            width:980px;
+            max-width:1050px;
+        }
+        #table_region_summary tbody td{
+            border: 1px solid black;
+            text-align: right;
+        }
+    </style>
+    <hr>
+    <div style="margin-top:10px;width:990px;max-width:1100px;">
+    <table border="1" cellspacing="0" cellpadding="1" align="right" id="table_region_summary">
+      <thead><tr>
+        <th>Club</th>
+        <th>Members</th>
+      </tr></thead><tbody>';
+
+    while($dao->fetch()){
+
+        $html .= '<tr>
+          <td>' . $dao->addressee_display . '</td>
+          <td class="club_right"><a href="/club_details/club/' . $dao->id . '">Members</a></td>
+        </tr>';
+
+    }
+
+    $dao->free();
+
+    $html .= '</tbody></table></div>';
+    return $html;
+
+}
+
+function club_details_region_summary($region_id, &$count) {
+
+    $mrj_regions = array(62829,62830);
+    if (in_array($region_id, $mrj_regions))
+        return club_details_mrj_region_summary($region_id, $count);
+
+    $can_update = false;
+    $can_read = false;
+
+    global $club_details_permissions;
+    if ($club_details_permissions['admin'] ||
+        $club_details_permissions['international_update'] ||
+        array_key_exists($region_id, $club_details_permissions['regional_update'])
+    ) {
+        $can_update = true;
+    } elseif ($club_details_permissions['international_read'] ||
+        array_key_exists($region_id, $club_details_permissions['regional_read'])
+    ) {
+        $can_read = true;
+    }
+    if (!$can_update && !$can_read) {
+        return club_details_clubs_in_region($region_id, $count);
+    }
+
+    $html = '';
+    $baseline=0;
+    $billed=0;
+    $listed=0;
+    $c_dues=0;  $c_adjustment=0;  $c_paid=0;  $c_balance=0;
+    $p_dues=0;  $p_adjustment=0;  $p_paid=0;  $p_balance=0;
+    $rc_dues=0; $rc_adjustment=0; $rc_paid=0; $rc_balance=0;
+    $rp_dues=0; $rp_adjustment=0; $rp_paid=0; $rp_balance=0;
+
+    $dao = CRM_Core_DAO::executeQuery( _region_summary_mysql_query($region_id), CRM_Core_DAO::$_nullArray);
+    $count = $dao->N;
+    $html = '
+    <style type="text/css">
+        #table_region_summary {
+            background-color: #FFFFEE;
+            width:980px;
+            max-width:1050px;
+        }
+        #table_region_summary tbody td{
+            border: 1px solid black;
+            text-align: right;
+        }
+    </style>
+    <hr>
+    <div style="margin-top:10px;width:990px;max-width:1100px;">
+    <table border="1" cellspacing="0" cellpadding="1" align="right" id="table_region_summary">
+      <thead><tr>
+        <th>Club</th>
+        <th>&nbsp;</th>
+        <th>Baseline 2013</th>
+        <th>Last List</th>
+        <th>Dues Rate</th>
+        <th>Regional Rate</th>
+        <th>Members Billed</th>
+        <th>Members Listed</th>
+        <th>&nbsp;</th>
+        <th>Dues</th>
+        <th>Adjustment</th>
+        <th>Paid</th>
+        <th>Balance</th>
+      </tr></thead><tbody>';
+
+    while($dao->fetch()){
+
+        $baseline = $baseline + $dao->club_members_2013_92;
+        $billed = $billed + $dao->number_of_members_billed_for_116;
+        $listed = $listed + $dao->number_of_club_members_104;
+        $c_dues = $c_dues + $dao->current_billing_international_105;
+        $c_adjustment = $c_adjustment+$dao->adjustment_prior_international_119;
+        $c_paid = $c_paid + $dao->paid_to_date_international_111;
+        $c_balance = $c_balance + $dao->current_balance_internationla_113;
+
+        $html .= '<tr>
+          <td>' . $dao->addressee_display . '</td>
+          <td class="club_right"><a href="/club_details/club/' . $dao->id . '">Members</a></td>
+          <td align="right">' . $dao->club_members_2013_92 . '</td>
+          <td align="right">' . $dao->list_date . '</td>
+          <td align="right">' . $dao->dues_rate_98 . '</td>
+          <td align="right">' . $dao->regional_dues_rate_99 . '</td>
+          <td align="right">' . $dao->number_of_members_billed_for_116 . '</td>
+          <td align="right">' . $dao->number_of_club_members_104 . '</td>
+          <td>Current</td>
+          <td align="right">' . $dao->current_billing_international_105 . '</td>
+          <td align="right">' . $dao->adjustment_prior_international_119 . '</td>
+          <td align="right" scope="col">' . $dao->paid_to_date_international_111 . '</td>
+          <td align="right" scope="col">' . $dao->current_balance_internationla_113 . '</td>
+        </tr>';
+
+        if ($dao->past_due_balance_international_121 != 0 ){
+            $p_dues += $dao->past_due_international_107;
+            $p_adjustment += $dao->adjustment_prior_international_119;
+            $p_paid += $dao->paid_prior_international_118;
+            $p_balance += $dao->past_due_balance_international_121;
+              $html .= '<tr>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td bgcolor="#FFFF33">Past</td>
+                <td align="right" bgcolor="#FFFF33">' . $dao->past_due_international_107 . '</td>
+                <td align="right" bgcolor="#FFFF33">' . $dao->adjustment_prior_international_119 . '</td>
+                <td align="right" bgcolor="#FFFF33">' . $dao->paid_prior_international_118 . '</td>
+                <td align="right" bgcolor="#FFFF33">' . $dao->past_due_balance_international_121 . '</td>
+              </tr>';
+        }
+
+        if  ($dao->current_billing_region_106 != 0 ){
+            $rc_dues += $dao->current_billing_region_106;
+            $rc_adjustment += $dao->adjustment_regional_110;
+            $rc_paid += $dao->paid_to_date_regional_112;
+            $rc_balance += $dao->current_balance_regional_115;
+            $html .= '<tr>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td bgcolor="#66FF66" scope="col">Region</td>
+                <td align="right" bgcolor="#66FF66" scope="col">' . $dao->current_billing_region_106 . '</td>
+                <td align="right" bgcolor="#66FF66" scope="col">' . $dao->adjustment_regional_110 . '</td>
+                <td align="right" bgcolor="#66FF66" scope="col">' . $dao->paid_to_date_regional_112 . '</td>
+                <td align="right" bgcolor="#66FF66" scope="col">' . $dao->current_balance_regional_115 . '</td>
+                  </tr>';
+        }
+
+        if  ($dao->past_due_balance_regional_122 != 0 ){
+            $rp_dues += $dao->past_due_regional_108;
+            $rp_adjustment += $dao->adjustment_prior_regional_120;
+            $rp_paid += $dao->paid_prior_regional_117;
+            $rp_balance += $dao->past_due_balance_regional_122;
+
+            $html .= '<tr>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td bgcolor="#66FFFF" scope="col">Past Region</td>
+                <td align="right" bgcolor="#66FFFF" scope="col">' . $dao->past_due_regional_108 . '</td>
+                <td align="right" bgcolor="#66FFFF" scope="col">' . $dao->adjustment_prior_regional_120 . '</td>
+                <td align="right" bgcolor="#66FFFF" scope="col">' . $dao->paid_prior_regional_117 . '</td>
+                <td align="right" bgcolor="#66FFFF" scope="col">' . $dao->past_due_balance_regional_122 . '</td>
+              </tr>';
+        }
+    }
+    $dao->free();
+
+    $html .= '<tr>
+      <td scope="col"><b>Current Total</b></td>
+      <td align="right" scope="col"></td>
+      <td align="right" scope="col">' . $baseline . '</td>
+      <td align="right" scope="col"></td>
+      <td align="right" scope="col"></td>
+      <td align="right" scope="col"></td>
+      <td align="right" scope="col">' . $billed . '</td>
+      <td align="right" scope="col">' . $listed . '</td>
+      <td scope="col">Current</td>
+      <td align="right" scope="col">' . $c_dues . '</td>
+      <td align="right" scope="col">' . $c_adjustment . '</td>
+      <td align="right" scope="col">' . $c_paid . '</td>
+      <td align="right" scope="col">' . $c_balance . '</td>
+    </tr>';
+
+    if ($p_balance != 0 ){
+      $html .= '<tr>
+        <td bgcolor="#FFFF33">Past Total</td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td bgcolor="#FFFF33">Past</td>
+        <td align="right" bgcolor="#FFFF33">' . $p_dues . '</td>
+        <td align="right" bgcolor="#FFFF33">' . $p_adjustment . '</td>
+        <td align="right" bgcolor="#FFFF33">' . $p_paid . '</td>
+        <td align="right" bgcolor="#FFFF33">' . $p_balance . '</td>
+      </tr>';
+    }
+
+    if ($rc_balance != 0 ){
+      $html .= '<tr>
+        <td bgcolor="#66FF66">Region Total</td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td bgcolor="#66FF66">Region</td>
+        <td align="right" bgcolor="#66FF66">' . $rc_dues . '</td>
+        <td align="right" bgcolor="#66FF66">' . $rc_adjustment . '</td>
+        <td align="right" bgcolor="#66FF66">' . $rc_paid . '</td>
+        <td align="right" bgcolor="#66FF66">' . $rc_balance . '</td>
+      </tr>';
+    }
+
+    if ($rp_balance != 0 ) {
+      $html .= '<tr>
+        <td bgcolor="#6FFFFF">Past Region Total</td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td bgcolor="#66FFFF">Past Region</td>
+        <td align="right" bgcolor="#66FFFF">' . $rp_dues . '</td>
+        <td align="right" bgcolor="#66FFFF">' . $rp_adjustment . '</td>
+        <td align="right" bgcolor="#66FFFF">' . $rp_paid . '</td>
+        <td align="right" bgcolor="#66FFFF">' . $rp_balance . '</td>
+      </tr>';
+    }
+
+    $html .= '</tbody></table></div>';
+    return $html;
+
+}
+function club_details_get_club_members($club_id) {
+
+    $sql = "SELECT concat(ccb.last_name, ', ', ccb.first_name) as name, ccb.id as cid
+	FROM civicrm_relationship cr
+        JOIN civicrm_contact ccb on ccb.id=cr.contact_id_a and end_date is null and cr.is_active = 1
+        WHERE cr.contact_id_b = $club_id
+        AND ccb.is_deleted <> 1
+        AND cr.relationship_type_id = 10
+        AND IFNULL(ccb.is_deceased,0) = 0
+        ORDER BY ccb.sort_name";
+
+    $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+
+    ## $results = array(-1 => 'None');
+    while ($dao->N && $dao->fetch()) {
+        $results[$dao->cid] = $dao->name;
+    }
+    $dao->free();
+    return $results;
+}
+
+function club_details_get_officer_record($cid, $club_id, $title) {
+
+    $result = false;
+
+    $sql = "SELECT cpos.*
+        FROM `civicrm_contact` m
+        inner join civicrm_relationship relm
+        on m.id = relm.contact_id_a AND relm.relationship_type_id = 62 AND relm.contact_id_b = $club_id AND relm.end_date is null and relm.is_active = 1
+        inner join civicrm_value_club_position_5 cpos
+        on relm.id = cpos.entity_id
+        WHERE m.id = $cid
+        AND cpos.club_title_40 = '$title'";
+    $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+    if ($dao->N > 1) drupal_set_message("More than one record for $cid and $title", 'error');
+    if ($dao->N && $dao->fetch()) {
+        $result = $dao;
+    }
+    $dao->free;
+    return $result;
+}
+
+function club_details_get_regional_officer_record($cid, $region_id, $title) {
+
+    $result = false;
+
+    $sql = "SELECT rpos.*
+        FROM `civicrm_contact` m
+        inner join civicrm_relationship relm
+        on m.id = relm.contact_id_a AND relm.relationship_type_id = 63 AND relm.contact_id_b = $region_id AND relm.end_date is null and relm.is_active = 1
+        inner join civicrm_value_regional_position_2 rpos
+        on relm.id = rpos.entity_id
+        WHERE m.id = $cid
+        AND rpos.regional_title_31 = '$title'";
+    $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+    if ($dao->N > 1) drupal_set_message("More than one record for $cid and $title", 'error');
+    if ($dao->N && $dao->fetch()) {
+        $result = $dao;
+    }
+    $dao->free;
+    return $result;
+}
+
+function club_details_get_club_officers($club_id) {
+    $sql = "SELECT DISTINCT m.id as member_id, concat(m.first_name, ' ', m.last_name) as name, club_title_40 as office, club_addtional_title_41 as description, club_access_125 as auth
+        FROM `civicrm_contact` m
+        inner join civicrm_relationship relm
+        on m.id = relm.contact_id_a AND relm.relationship_type_id = 62 AND relm.contact_id_b = $club_id AND relm.end_date is null and relm.is_active = 1
+        inner join civicrm_value_club_position_5 cpos
+        on relm.id = cpos.entity_id
+        left join civicrm_option_value o on cpos.club_title_40 = o.value and o.option_group_id = 83
+        WHERE m.is_deleted <> 1 AND m.is_deceased <> 1
+        ORDER BY o.weight";
+    $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+
+    $results = array();
+
+    while ($dao->N && $dao->fetch()) {
+        $results[$dao->office][$dao->member_id] = array('name'=>$dao->name, 'desc'=>$dao->description, 'auth'=>$dao->auth);
+    }
+    $dao->free();
+    return $results;
+}
+
+function club_details_get_club_titles() {
+    $sql = "SELECT value from civicrm_option_value where option_group_id = 84 order by weight";
+    $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+    $results = array();
+
+    while ($dao->N && $dao->fetch()) {
+        $results[] = $dao->value;
+    }
+    $dao->free();
+    return $results;
+}
+
+function club_details_update_regional_officer($region_id, $oid, $cid, $action, $desc, $auth) {
+    ## drupal_set_message("$region_id $cid $oid $action $desc $auth");
+
+    ## fix escaped title
+    $oid = str_replace('$', "\'", $oid);
+    $oid = str_replace('_', ' ', $oid);
+    $title = $oid;
+
+    $result = club_details_get_regional_officer_record($cid, $region_id, $title);
+    if ($result) {
+        switch($action) {
+
+            case 'remove':
+                $sql = "DELETE FROM civicrm_value_regional_position_2
+                        WHERE id = {$result->id}";
+                //drupal_set_message($sql);
+                $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+
+                $sql = "UPDATE civicrm_relationship SET end_date = '" . date("Y-m-d") . "'
+                        WHERE id = {$result->entity_id}";
+                //drupal_set_message($sql);
+                $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+                $dao->free();
+                drupal_set_message("Regional Officer Relationship Removed");
+                break;
+            case 'update':
+                if ($desc == '0') $desc = '';
+                $sql = "UPDATE civicrm_value_regional_position_2 SET
+                        region_access_123 = '$auth',
+                        regional_additional_title_28 = '$desc'
+                        WHERE id = {$result->id}";
+
+                ## drupal_set_message($sql);
+                $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+                $dao->free();
+                drupal_set_message("Regional Officer Updated");
+                break;
+        }
+    }
+
+    drupal_goto("/club_details/region/$region_id");
+}
+
+function club_details_update_officer($club_id, $oid, $cid, $action, $desc, $auth) {
+    ## drupal_set_message("$club_id $cid $oid $action $desc $auth");
+
+    ## fix escaped title
+    $oid = str_replace('$', "\'", $oid);
+    $oid = str_replace('_', ' ', $oid);
+    $title = $oid;
+
+    $result = club_details_get_officer_record($cid, $club_id, $title);
+    if ($result) {
+        switch($action) {
+
+            case 'remove':
+                $sql = "DELETE FROM civicrm_value_club_position_5
+                        WHERE id = {$result->id}";
+                //drupal_set_message($sql);
+                $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+
+                $sql = "UPDATE civicrm_relationship SET end_date = '" . date("Y-m-d") . "'
+                        WHERE id = {$result->entity_id}";
+                //drupal_set_message($sql);
+                $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+                $dao->free();
+                drupal_set_message("Officer Relationship Removed");
+                break;
+            case 'update':
+                if ($desc == '0') $desc = '';
+                $sql = "UPDATE civicrm_value_club_position_5 SET
+                        club_access_125 = '$auth',
+                        club_addtional_title_41 = '$desc'
+                        WHERE id = {$result->id}";
+
+                ## drupal_set_message($sql);
+                $dao = CRM_Core_DAO::executeQuery( $sql, array() );
+                $dao->free();
+                drupal_set_message("Officer Updated");
+                break;
+        }
+    }
+
+    drupal_goto("/club_details/club/$club_id");
+}
+function club_details_block_info() {
+  $blocks = array();
+
+  $blocks['club_officers'] = array(
+    'info' => t('Club Officers'),
+    'cache' => DRUPAL_NO_CACHE,
+    'region' => 'content',
+    'status' => 1,
+    'visibility' => BLOCK_VISIBILITY_LISTED,
+    'pages' => 'club_details/club/*'
+  );
+
+  $blocks['regional_officers'] = array(
+    'info' => t('Regional Officers'),
+    'cache' => DRUPAL_NO_CACHE,
+    'region' => 'content',
+    'status' => 1,
+    'visibility' => BLOCK_VISIBILITY_LISTED,
+    'pages' => 'club_details/region/*'
+  );
+
+  return $blocks;
+}
+
+function club_details_block_view($delta = '') {
+
+    global $club_details_permissions;
+
+    // The $delta parameter tells us which block is being requested.
+    $block = array();
+    $mpath = drupal_get_path('module', 'club_details');
+
+    switch ($delta) {
+        case 'club_officers':
+            drupal_add_js($mpath . '/js/club_details.js', array('type'=>'file', 'cache' => false));
+            drupal_add_js('jQuery(document).ready(function () { jQuery("#club-details-officers-form .form-item").addClass("container-inline"); });', 'inline');
+            drupal_add_js('jQuery(document).ready(function () { jQuery("#club-details-officers-form .form-item label").css("width", "170px").css("float","left").css("padding-top","8px"); });', 'inline');
+            $block['subject'] = null; //t('Club Officers');
+            $block['content'] = drupal_get_form('club_details_club_officers_form');
+            break;
+        case 'regional_officers':
+
+            $region_id = arg(2);
+
+            if (!$club_details_permissions['admin'] &&
+                !$club_details_permissions['international_update'] &&
+                !array_key_exists($region_id, $club_details_permissions['regional_update'])
+               )
+               return;
+
+            drupal_add_js($mpath . '/js/club_details.js', array('type'=>'file', 'cache' => false));
+            drupal_add_js('jQuery(document).ready(function () { jQuery("#club-details-officers-form .form-item").addClass("container-inline"); });', 'inline');
+            drupal_add_js('jQuery(document).ready(function () { jQuery("#club-details-officers-form .form-item label").css("width", "170px").css("float","left").css("padding-top","8px"); });', 'inline');
+            $block['subject'] = null; //t('Regional Officers');
+            $block['content'] = drupal_get_form('club_details_regional_officers_form');
+            break;
+    }
+    return $block;
+}
+
+/*
+ * #5 - Ubercart
+ *
+ * sites/default/modules/fjmc_tokens/fjmc_tokens.module
+ *
+ * This is used in above file
+ *
+ */
+function _creat_order($uid = null, $cid) {
+    if($uid == null) $uid = 0;
+
+    $order = uc_order_new($uid, 'post_checkout');
+
+    if (!civicrm_initialize()) {
+        return;
+}
+
+    $order_id = $order->order_id;
+
+    if(is_numeric($cid)) {
+        $fields = $contact = array();
+
+        // the CiviCRM API version 3.
+        $params = array(
+          'contact_id' => $cid,
+          'version' => 3,
+          'return.first_name' => 1,
+          'return.last_name' => 1,
+          'return.contact_type' => 1,
+          'return.legal_name' => 1
+        );
+
+        // Get Contact details for the user.
+        $contact = civicrm_api( 'contact', 'get', $params);
+
+        $cid = isset($contact['id']) ? $contact['id'] : 0;
+        $contact['values'][$cid]['first_name'] = ($contact['values'][$cid]['contact_type'] == 'Organization') ? $contact['values'][$cid]['legal_name'] : $contact['values'][$cid]['first_name'];
+
+        $dao = CRM_Core_DAO::executeQuery("SELECT location_type_id, is_primary, is_billing, street_address, supplemental_address_1, city, postal_code, state_province_id FROM civicrm_address WHERE contact_id = '$cid' order by location_type_id asc");
+        $primary = $billing = $home = $tst = array();
+        while ($dao->fetch()) {
+           $obj = new stdClass();
+           $obj->street_address = $dao->street_address;
+           $obj->supplemental_address_1 = $dao->supplemental_address_1;
+           $obj->city = $dao->city;
+           $obj->postal_code = $dao->postal_code;
+           $obj->state_province_id = $dao->state_province_id;
+
+           if(1 == $dao->is_primary){
+               $primary = $obj;
+               if($dao->location_type_id == 5) {
+                    $billing = $obj;
+               }
+           } elseif($dao->location_type_id == 1) {
+               $home = $obj;
+           } elseif($dao->location_type_id == 3) {
+               $home = $obj;
+           } elseif($dao->location_type_id == 5) {
+               $billing = $obj;
+           }
+        }
+        $dao->free();
+        $primary = is_null($primary) ? $home : $primary;
+
+        if(is_object($primary)) {
+            if(isset($primary->state_province_id)) {
+                //get state code
+                $state_iso_code = CRM_Core_DAO::singleValueQuery("SELECT abbreviation FROM civicrm_state_province WHERE id = ".$primary->state_province_id);
+                if(is_string($state_iso_code)) {
+                    $result = db_query('SELECT zone_id, zone_country_id FROM {uc_zones} where zone_code = :zone_code', array(':zone_code' => $state_iso_code))->fetchObject();
+                }
+                if($result->zone_country_id) {
+                    $fields['delivery_first_name'] = $contact['values'][$cid]['first_name'];
+                    $fields['delivery_last_name'] = $contact['values'][$cid]['last_name'];
+                    $fields['delivery_phone'] = '';
+                    $fields['delivery_company'] = '';
+                    $fields['delivery_street1'] = isset($primary->street_address) ? $primary->street_address : '';
+                    $fields['delivery_street2'] = isset($primary->supplemental_address_1) ? $primary->supplemental_address_1 : '';
+                    $fields['delivery_city'] = isset($primary->city) ? $primary->city : '';
+                    $fields['delivery_zone'] = isset($result->zone_id) ? $result->zone_id : 0;
+                    $fields['delivery_postal_code'] = isset($primary->postal_code) ? $primary->postal_code : '';
+                    $fields['delivery_country'] = $result->zone_country_id;
+                    $fields['delivery_phone'] = '';
+                }
+            }
+        }
+
+        if(is_object($billing)) {
+            if(isset($billing->state_province_id))
+            {
+               //get state code
+               $state_iso_code = CRM_Core_DAO::singleValueQuery("SELECT abbreviation FROM civicrm_state_province WHERE id = ".$billing->state_province_id);
+               if(is_string($state_iso_code)) {
+                   $result = db_query('SELECT zone_id, zone_country_id FROM {uc_zones} where zone_code = :zone_code', array(':zone_code' => $state_iso_code))->fetchObject();
+               }
+               if($result->zone_country_id) {
+                   $fields['billing_first_name'] = $contact['values'][$cid]['first_name'];
+                   $fields['billing_last_name'] = $contact['values'][$cid]['last_name'];
+                   $fields['billing_phone'] = '';
+                   $fields['billing_company'] = '';
+                   $fields['billing_street1'] = isset($billing->street_address) ? $billing->street_address : '';
+                   $fields['billing_street2'] = isset($billing->supplemental_address_1) ? $billing->supplemental_address_1 : '';
+                   $fields['billing_city'] = isset($billing->city) ? $billing->city : '';
+                   $fields['billing_zone'] = isset($result->zone_id) ? $result->zone_id : 0;
+                   $fields['billing_postal_code'] = isset($billing->postal_code) ? $billing->postal_code : '';
+                   $fields['billing_country'] = $result->zone_country_id;
+               }
+            }
+        }
+        if(!empty($fields) && $order_id && (is_object($primary) || is_object($billing))) {
+            $update = db_update('uc_orders')->fields($fields)->condition('order_id', $order_id, '=')->execute();
+        }
+    }
+    drupal_goto('admin/store/orders/' . $order_id . '/edit', array('query' => array('destination' => '/civicrm/contact/view?reset=1&cid='.$cid)));
+}
+
+/*
+ * Export method
+ */
+function _club_details_get_member_export($dao, $clubname = '') {
+    $data = array();
+    $new_line = "\r\n";
+    $colom_separator = ',';
+    $format = $_GET['format'];
+    $sheet_title = 'Club Roster';
+
+    $headers[$sheet_title] = array(
+        'First Name', 'Last Name',
+        'Street Address', 'City', 'State', 'Country', 'Zip',
+        'Email', 'Landline', 'Mobile', 'Primary Phone',
+        'Prefix', 'Suffix',
+        'Active',
+    );
+
+    while($dao->fetch()){
+      $active = ($dao->is_deceased ? 'Deceased' : ($dao->is_active ? 'Yes' : 'No'));
+      $data[$sheet_title][] = array(
+                            $dao->first_name,
+                            $dao->last_name,
+                            $dao->street_address,
+                            $dao->city,
+                            $dao->abbreviation,
+                            $dao->country,
+                            $dao->postal_code,
+                            $dao->email,
+                            $dao->landline,
+                            $dao->mobile,
+                            ($dao->landline_is_primary ? 'Landline' : 'Mobile'),
+                            $dao->contact_prefix,
+                            $dao->contact_suffix,
+                            $active,
+                          );
+    }
+
+    // Store the file in sites/default/files
+    $dir = file_stream_wrapper_get_instance_by_uri('public://')->realpath();
+    $filename = preg_replace('/[^a-zA-Z0-9]/', '-', $clubname).'.'.$format;
+    $path = "$dir/phpexcel/$filename";
+
+    // Use the exclusively .xlsx format by Norm's request to avoid warnings in watchdog
+    $options = array(
+      'format' => 'xlsx',
+      'template' => dirname(__FILE__) . '/club_roster_template.xlsx',
+    );
+
+    // ATTENTION: the export below will use all modifiers/hooks in the functions below!
+    $result = phpexcel_export($headers, $data, $path, $options);
+
+    if ($result == PHPEXCEL_SUCCESS) {
+      $filename = basename($path);
+      header('Content-Type: application/force-download');
+      header('Content-Disposition: attachment;filename="'.$filename.'"');
+      if(readfile($path) !== false) {
+        unlink($path);
+      }
+      exit;
+    }
+    else {
+      drupal_set_message(t("Oops ! An error occured !"), 'error');
+    }
+}
+
+function cellColor(&$objPHPExcel, $cells,$color){
+    if(method_exists($objPHPExcel, 'getActiveSheet')) {
+        $objPHPExcel->getActiveSheet()->getStyle($cells)->getFill()
+        ->applyFromArray(array('type' => PHPExcel_Style_Fill::FILL_SOLID, 'color' => array('rgb' => $color)));
+    } else {
+        $objPHPExcel->getStyle($cells)->getFill()
+        ->applyFromArray(array('type' => PHPExcel_Style_Fill::FILL_SOLID, 'color' => array('rgb' => $color)));
+    }
+    /*$headerStyle = array(
+        'fill' => array( 'type' => PHPExcel_Style_Fill::FILL_SOLID,
+        'color' => array('rgb' => $color))
+    );*/
+    #$objPHPExcel->getActiveSheet()->getStyle($cells)->applyFromArray($headerStyle);
+}
+
+/*
+ * hook_export() - hook method for phpexcel drupal module
+ */
+function club_details_phpexcel_export($op, &$data, &$phpexcel, $options, $column = NULL, $row = NULL) {
+    /*
+     * $op : headers|post cell|pre cell|data
+     * @link: https://www.drupal.org/node/1415076
+     */
+    if(isset($options['custom_arg']) && $options['custom_arg'] == 'regional_report') {
+        switch($op) {
+          case 'headers':
+            //active sheet object
+            $activesheetObj =  $phpexcel->getActiveSheet();
+
+            $activesheetObj->getStyle("A1:X1")->getFont()->setSize(9);
+
+            $auto_size = array('A', 'G', 'H');
+            foreach($auto_size as $autosize_column) {
+
+                $columnwidthObj = $activesheetObj->getColumnDimension($autosize_column);
+
+                if($autosize_column != 'A') {
+                    $columnwidthObj->setWidth(11);
+                } else {
+                    #$columnwidthObj->setAutoSize(true);
+                    $activesheetObj->getStyle('A')->getAlignment()->setWrapText(true);
+                    $columnwidthObj->setWidth(10);
+                }
+            }
+
+            $activesheetObj->getColumnDimension('B')->setWidth(5);
+            $activesheetObj->getColumnDimension('C')->setWidth(10);
+            $activesheetObj->getColumnDimension('D')->setWidth(7);
+            $activesheetObj->getColumnDimension('E')->setWidth(7);
+            $activesheetObj->getColumnDimension('F')->setWidth(10);
+
+            foreach (range('I', 'X') as $char) {
+                $activesheetObj->getColumnDimension($char)->setWidth(7);
+            }
+
+
+            $activesheetObj->getStyle('I1:L1')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+            cellColor($phpexcel, 'I1:L1', 'E0E0E0');
+
+            $activesheetObj->getStyle('M1:P1')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+            cellColor($phpexcel, 'M1:P1', 'FFFF03');
+
+            $activesheetObj->getStyle('Q1:T1')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+            cellColor($phpexcel, 'Q1:T1', '55D54C');
+
+            $activesheetObj->getStyle('U1:X1')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+            cellColor($phpexcel, 'U1:X1', '83D4FC');
+
+            break;
+          case 'pre cell':
+
+            //make it first and second row in the sheet will be bold ie)column headers
+            switch($row){
+                case 1:
+                  $phpexcel->mergeCells('I1:L1');
+                  $phpexcel->mergeCells('M1:P1');
+                  $phpexcel->mergeCells('Q1:T1');
+                  $phpexcel->mergeCells('U1:X1');
+                case 2:
+                  $styleArray = array(
+                    'font' => array(
+                      'bold' => TRUE,
+                    ),
+                  );
+                  $phpexcel->getStyleByColumnAndRow($column,$row)->applyFromArray($styleArray);
+            }
+            cellColor($phpexcel, "I{$row}:L{$row}", 'E0E0E0');
+            cellColor($phpexcel, "M{$row}:P{$row}", 'FFFF03');
+            cellColor($phpexcel, "Q{$row}:T{$row}", '55D54C');
+            cellColor($phpexcel, "U{$row}:X{$row}", '83D4FC');
+            $phpexcel->getStyle("I{$row}:X{$row}")->getNumberFormat()->setFormatCode('0.00');
+            $phpexcel->getStyle("A{$row}:X{$row}")->getFont()->setSize(9);
+
+            if(($options['custom_arg_total_rows']+1) == $row){
+                cellColor($phpexcel, "A{$row}:X{$row}", 'FCDB48');
+            }
+          break;
+        }
+    } else {
+
+        switch($op) {
+          case 'headers':
+            $phpexcel->getActiveSheet()->getDefaultColumnDimension($column+1, TRUE)->setAutoSize(true);
+            //Freeze panes
+            $phpexcel->getActiveSheet()->freezePane('C2');
+            break;
+          case 'post cell':
+            $phpexcel->setCellValueExplicitByColumnAndRow($column, $row, $data);    //for fixing the leading zero in postal code
+            break;
+          case 'pre cell':
+            // Set Protection and Drop-downs
+            $dropdowns = array(
+              5 => array('United States', 'Canada', 'France'), //CRM_Core_PseudoConstant::country(),
+              10 => array('Mobile', 'Landline'),
+              11 => CRM_Contact_BAO_Contact::buildOptions('prefix_id'),
+              12 => CRM_Contact_BAO_Contact::buildOptions('suffix_id'),
+              13 => array('Yes', 'No', 'Deceased'),
+	    );
+
+            if (in_array($column, array_keys($dropdowns))) {
+              $objValidation2 = $phpexcel->getCellByColumnAndRow($column, $row)->getDataValidation();
+              $objValidation2->setType(PHPExcel_Cell_DataValidation::TYPE_LIST);
+              $objValidation2->setErrorStyle(PHPExcel_Cell_DataValidation::STYLE_INFORMATION);
+              $blanks = ($column != 12); // Allow blanks for all except Status
+              $objValidation2->setAllowBlank($blanks); // Does not work, but should according to docs
+              $objValidation2->setShowInputMessage(true);
+              $objValidation2->setShowErrorMessage(true);
+              $objValidation2->setShowDropDown(true);
+              $objValidation2->setPromptTitle('Pick from list');
+              $objValidation2->setPrompt('Please pick a value from the drop-down list.');
+              $objValidation2->setErrorTitle('Input error');
+              $objValidation2->setError('Value is not in list, click Cancel to restore.');
+              $list = '"' . implode(',', $dropdowns[$column]) . '"';
+              $objValidation2->setFormula1($list);
+            }
+            break;
+        }
+    }
+}
+
+function club_details_phpexcel_dropdown(&$phpexcel, $col, $row, $values) {
+  $objValidation2 = $phpexcel->getCell($col . $row)->getDataValidation();
+/*
+  $objValidation2->setType(PHPExcel_Cell_DataValidation::TYPE_LIST);
+  $objValidation2->setErrorStyle(PHPExcel_Cell_DataValidation::STYLE_INFORMATION);
+  $objValidation2->setAllowBlank(false);
+  $objValidation2->setShowInputMessage(true);
+  $objValidation2->setShowDropDown(true);
+  $objValidation2->setPromptTitle('Pick from list');
+  $objValidation2->setPrompt('Please pick a value from the drop-down list.');
+  $objValidation2->setErrorTitle('Input error');
+  $objValidation2->setError('Value is not in list');
+  $list = '"' . implode(',', $values) . '"';
+  $objValidation2->setFormula1($list);
+*/
+}
+
+
+/*
+ * Ajax Form
+ */
+function club_details_form($form, &$form_state) {
+    #$form = array();
+
+    $form['upload_doc'] = array(
+        '#type' => 'file',
+    );
+
+    $form['upload'] = array(
+       '#type' => 'submit',
+       '#value' => 'Import Rosters',
+       #'#submit' => array('upload_image'),
+       '#attributes' => array('class' => array('button')),
+       /*'#ajax'=> array(
+          'callback'=>'_import_doc_callback',
+          'wrapper'=> 'upload-doc-area',
+          'method'=> 'replace',
+          'effect'=> 'fade',
+       ),*/
+    );
+    $form['#action'] = request_uri();
+    return $form;
+}
+
+function club_details_form_validate($form, &$form_state){
+  if(!isset($_SESSION['current_club']) && $_SESSION['current_club'] == '') {
+    form_set_error('club_id', t('Club id is missing.'));
+  }
+}
+
+function club_details_form_submit($form, &$form_state) {
+    $club_id = $_SESSION['current_club'];
+    $flag = _import_doc_callback($form, $form_state);
+    if($flag == true)drupal_goto("/club_details/club/$club_id");exit;
+}
+/*
+ * Ajax callback method
+ */
+function _import_doc_callback($form, &$form_state) {
+    $form_field_name = 'upload_doc';
+    $extensions = 'xls xlsx csv ods';
+    #$uri = 'public://'; $path= file_create_url($uri);
+    $filename = trim(drupal_basename($_FILES ['files']['name'][$form_field_name]), '.');
+    $ext = pathinfo($filename, PATHINFO_EXTENSION);
+
+    /*$commands = $new_state = array();
+    $new_state['build_info'] = $form_state['build_info'];
+    $new_state['rebuild'] = TRUE;
+    $new_state['values'] = array();
+    $new_state += form_state_defaults();
+    $new_form_array = drupal_rebuild_form('club_details_form', $new_state);
+    $new_form = drupal_render($new_form_array);
+    $commands[] = ajax_command_html('#doc-upload-wrapper', $new_form);*/
+
+    if($filename == '') {
+        drupal_set_message(t('Please upload xls or csv files.'), 'error', FALSE);
+        #$messages = theme_status_messages(array('display' => 'error'));
+        #$commands[] = ajax_command_html('#custom_messages', $messages);
+    }
+    elseif(!empty($ext) && strpos($extensions, $ext) !== false){
+        $dir = file_stream_wrapper_get_instance_by_uri('public://')->realpath();
+        $filename = file_munge_filename($filename, $extensions);
+        $file_store_location = $dir.'/phpexcel/'.$filename;
+        if(move_uploaded_file($_FILES ['files']['tmp_name'][$form_field_name], $file_store_location)) {
+
+            $document_array = phpexcel_import($file_store_location);
+            $return = _import_process($document_array);
+
+            if(!empty($return)) {
+                drupal_set_message('Document has been imported successfully.<br />'.implode('<br />', $return), 'status', FALSE);
+                #$messages = theme_status_messages(array('display' => 'status'));
+
+                #send a thank you note to the current user
+                #
+                // get user's first_name
+                $contact_id = CRM_Core_Session::singleton()->getLoggedInContactID();
+                $contact = civicrm_api3('contact', 'get', array('id' => $contact_id));
+                $firstName = $contact['values'][$contact_id]['first_name'];
+
+                // get user's club name
+                $first_club_id = null;
+                club_details_user_offices($contact_id, $first_club_id);
+                $club = civicrm_api3('contact', 'get', array('id' => $first_club_id));
+                $club_name = $club['values'][$first_club_id]['legal_name'];
+
+                // store the club name in test_1 (ClubNameForChaverot)
+                $result = civicrm_api3('CustomValue', 'create', array('entity_id' => $contact_id, 'custom_1' => $club_name));
+
+                // get current user's (first) primary email
+                $result = civicrm_api3('Email', 'get', array(
+                        'sequential' => 1,
+                        'contact_id' => $contact_id,
+                        'is_primary' => 1,
+                ));
+                $firstEmail = array_shift($result['values']);
+                $email = $firstEmail['email'];
+
+                // send the email using the template in id field
+				$result = civicrm_api3('MessageTemplate', 'send', array(
+				  //'id' => 326, on staging
+				  'id' => 335,
+				  'sequential' => 1,
+				  'contact_id' => $contact_id,
+				  'from' => "no-reply@fjmc.org",
+				  'to_name' => $firstName,
+				  'to_email' => $email,
+				));
+
+            } elseif($return === false) {
+                drupal_set_message('Document is empty', 'error', FALSE);
+                #$messages = theme_status_messages(array('display' => 'error'));
+            } else {
+                drupal_set_message('Document has been imported successfully.', 'status', FALSE);
+                #$messages = theme_status_messages(array('display' => 'status'));
+            }
+            #$commands[] = ajax_command_html('#custom_messages', $messages);
+
+        } else {
+            drupal_set_message('File not uploaded. May be target directory is not available/writable.', 'error', FALSE);
+            #$messages = theme_status_messages(array('display' => 'error'));
+            #$commands[] = ajax_command_html('#custom_messages', $messages);
+        }
+    } else {
+        drupal_set_message('Uploaded file extensions is not allowed to upload. Please upload xls or csv files.', 'error', FALSE);
+        #$messages = theme_status_messages(array('display' => 'error'));
+        #$commands[] = ajax_command_html('#custom_messages', $messages);
+    }
+    return true;
+    #return array('#type' => 'ajax', '#commands' => $commands);
+}
+
+
+/*
+ * Read the user details from excel/csv document and import into CMS and CRM databases.
+ *
+ */
+function _import_process($document_array) {
+
+    if(count($document_array) == 0) return false;
+
+    if (!defined('CIVICRM_SETTINGS_PATH')) civicrm_initialize();
+
+    $club_id = $_SESSION['current_club'];
+
+    if($club_id == '') return;
+
+    $error_messages = array();
+    foreach($document_array as $sheet => $sheet_user_array) {   //sheet foreach
+        foreach($sheet_user_array as $arrKey => $user_array) {
+
+            $contact_id = $user_id = '';
+            $is_email_exist = true;
+            $email = $user_array['Email'];
+
+            if($email == '') continue;
+
+            $name = strtolower($user_array['First Name']);
+            $lname = strtolower($user_array['Last Name']);
+            $action = strtolower(trim($user_array['Status']));
+
+            $tmp_contact_id = isset($user_array['Contact ID']) ? $user_array['Contact ID'] : 0; //from excel sheet
+            if($tmp_contact_id){
+              $contact_id = $tmp_contact_id;
+            } else {
+              //Check where the user email/username is already available in CMS, If Yes, update otherwise add as new user into the system.
+              $is_email_exist = db_query('select uid from {users} where mail = :mail limit 0,1', array(':mail' => $email))->fetchField();
+            }
+
+            if($action == 'just inactive' && $club_id != '') {
+
+                if(!$contact_id && $is_email_exist) {
+                    //Fetch the civicrm contact id for matching cms user id.
+                    $UFMatch = civicrm_api3('UFMatch', 'Get', array('uf_id' => $is_email_exist));
+                    if(isset($UFMatch['count']) && $UFMatch['count'] >0) {
+                        $UFMatch_id = $UFMatch['id'];
+                        $contact_id = $UFMatch['values'][$UFMatch_id]['contact_id'];
+                    }
+                }
+
+                if(!$contact_id) {
+                    $crm_user_detail = civicrm_api3('contact', 'Get', array('email' => $email));
+                    $UFMatch_id = $crm_user_detail['id'];
+                    $contact_id = $crm_user_detail['values'][$UFMatch_id]['contact_id'];
+                }
+
+                //removing relationship for the contact with the club
+                $rel = civicrm_api3('relationship', 'get', array('contact_id_a' => $contact_id, 'is_count' =>true));
+                if($rel['count'] >1){
+                  foreach($rel['values'] as $tmprelid => $tmprelItem){
+                    if($tmprelItem['contact_id_a'] == $contact_id && $tmprelItem['contact_id_b'] == $club_id){
+                      try {
+                          $relParams = array('id' => $tmprelid);
+                          $rel_result = civicrm_api3('relationship', 'delete', $relParams);
+                      } catch(CiviCRM_API3_Exception $e) {
+                          $error_messages[] = 'Relationship not deleted for email: '.$email;
+                      }
+                    }
+                  }
+                } else if($rel['count'] >0 && $rel['id'] != '') {
+                    try {
+                        $relParams = array('id' => $rel['id']);
+                        $rel_result = civicrm_api3('relationship', 'delete', $relParams);
+                    } catch(CiviCRM_API3_Exception $e) {
+                        $error_messages[] = 'Relationship not deleted for email: '.$email;
+                    }
+                }
+            } else if($email != '') {
+
+                if($is_email_exist == FALSE) {
+
+                    $contact_id = 0;
+                    try{
+                        $is_civicrm_user = civicrm_api3('contact', 'get', array('email' => $email, 'return' => 'contact_id'));
+                    }
+                    catch (CiviCRM_API3_Exception $e) {
+                        // handle error here
+                        $errorMessage = $e->getMessage();
+                        $errorCode = $e->getErrorCode();
+                        $errorData = $e->getExtraParams();
+                        $error_messages[] = 'Civicrm email check: '.$errorMessage.$email;
+                    }
+
+                    if(isset($is_civicrm_user['count']) && $is_civicrm_user['count'] > 0 ){
+                        $tcid = $is_civicrm_user['id'];
+                        $contact_id = $is_civicrm_user[$tcid]['contact_id'];
+                    }
+
+                    if($contact_id == 0) {
+                        //Prepare params for CMS user details array
+                        $new_user = array(
+                            'name' => ($email != '' ? $email : $name),
+                            'pass' => $email, // note: do not md5 the password
+                            'mail' => $email,
+                            'status' => 1,
+                            'init' => $email,
+                            'roles' => array( DRUPAL_AUTHENTICATED_RID => 'authenticated user' ),
+                        );
+
+                        try{
+                            // The first parameter is sent blank so a new user is created.
+                            $account = user_save('', $new_user);
+                            $user_id = $account->uid;
+                        } catch(Exception $e){
+                            $errorMessage = $e->getMessage();
+                            $error_messages[] = "User email({$email}) already exist in the database: ".$errorMessage;
+                            continue;
+                        }
+                    }
+                } elseif(!$contact_id) {
+                    #$account = user_save((object) array('uid' => $is_email_exist), $new_user);
+                    $user_id = $is_email_exist;
+                }
+
+                //fetching CRM contact id by using CMS id
+                if($user_id) {
+                    //Fetch the civicrm contact id for matching cms user id.
+                    $UFMatch = civicrm_api3('UFMatch', 'Get', array('uf_id' => $user_id));
+                    $UFMatch_id = $UFMatch['id'];
+                    $contact_id = $UFMatch['values'][$UFMatch_id]['contact_id'];
+                }
+
+                //If contact id is still not available, we are checking the contact table with email
+                if(!$contact_id) {
+                    $crm_user_detail = civicrm_api3('contact', 'Get', array('email' => $email));
+                    $UFMatch_id = $crm_user_detail['id'];
+                    $contact_id = $crm_user_detail['values'][$UFMatch_id]['contact_id'];
+                }
+
+                //fetching contact prefix value
+                $prefix = 0;
+                if(isset($user_array['Name Prefix']) && $user_array['Name Prefix'] != '') {
+                    try{
+                        $prefixresult = civicrm_api3('option_value', 'get', array('option_group_id' => 6, 'label' => $user_array['Name Prefix']));
+                        if(isset($prefixresult['count']) && $prefixresult['count'] >0) {
+                            $prefixid = $prefixresult['id'];
+                            $prefix = $prefixresult['values'][$prefixid]['value'];
+                        }
+                    }
+                    catch (CiviCRM_API3_Exception $e) {
+                        // handle error here
+                        $errorMessage = $e->getMessage();
+                        $errorCode = $e->getErrorCode();
+                        $errorData = $e->getExtraParams();
+                        $error_messages[] = "Prefix check for Name: {$name}, email: {$email}";
+                    }
+                }
+
+                //fetching contact suffix value
+                $suffix = 0;
+                if(isset($user_array['Name Suffix']) && $user_array['Name Suffix'] != '') {
+                    try{
+                        $suffixresult = civicrm_api3('option_value', 'get', array('option_group_id' => 7, 'label' => $user_array['Name Suffix']));
+                        if(isset($suffixresult['count']) && $suffixresult['count'] >0) {
+                            $suffixid = $suffixresult['id'];
+                            $suffix = $suffixresult['values'][$suffixid]['value'];
+                        }
+                    }
+                    catch (CiviCRM_API3_Exception $e) {
+                        // handle error here
+                        $errorMessage = $e->getMessage();
+                        $errorCode = $e->getErrorCode();
+                        $errorData = $e->getExtraParams();
+                        $error_messages[] = "Suffix check for Name: {$name}, email: {$email}";
+                    }
+                }
+
+                //CRM contact add/update process start
+                try{
+                    //Prepare params array to add/update the CRM user details
+                    $params = array(
+                        'first_name' => $name,
+                        'last_name' => $user_array['Last Name'],
+                        'email' => $email,
+                        'contact_type' => 'Individual',
+                    );
+                    if($contact_id) {
+                        $params['id'] = $contact_id;
+                    }
+
+                    //prefix update
+                    if($prefix) {
+                        $params['prefix_id'] = $prefix;
+                    }
+
+                    //suffix update
+                    if($suffix) {
+                        $params['suffix_id'] = $suffix;
+                    }
+
+                    $result = civicrm_api3('contact', 'create', $params);   // Add/Update the Contact into the CRM database
+                    $contact_id = $result['id'];
+                    $error_messages[] = "Contact information added/updated for Name: {$name}, email: {$email}";
+                } catch (CiviCRM_API3_Exception $e) {
+                    // handle error here
+                    $errorMessage = $e->getMessage();
+                    $errorCode = $e->getErrorCode();
+                    $errorData = $e->getExtraParams();
+                    $error_messages[] = 'Contact information not added/updated for email: '.$errorMessage.$email;
+                } #finally {
+
+                    //country
+                    $country_id = 1228; //for us
+                    if(isset($user_array['Country']) && $user_array['Country'] != '') {
+                        try{
+                            $country = civicrm_api3('country', 'get', array('name' => $user_array['Country']));
+                            $country_id = $country['id'];
+                        } catch(CiviCRM_API3_Exception $e) {
+                            $errorMessage = $e->getMessage();
+                            $errorCode = $e->getErrorCode();
+                            $errorData = $e->getExtraParams();
+                            #$error_messages[] = 'Address not added/updated for email: '.$email;
+                        }
+                    }
+
+                    $state_province_id = null;
+                    if(isset($user_array['State']) && $user_array['State'] != '' && $country_id) {
+                      try{
+                        $query = "SELECT id FROM civicrm_state_province WHERE country_id = %1 AND abbreviation = %2";
+                        $params = array(1 => array($country_id, 'Integer'), 2 => array($user_array['State'], 'String'));
+                        $state_province_id = CRM_Core_DAO::singleValueQuery($query, $params);var_dump($state_province_id);
+                      } catch(CiviCRM_API3_Exception $e) {
+                        $errorMessage = $e->getMessage();
+                        $errorCode = $e->getErrorCode();
+                        $errorData = $e->getExtraParams();
+                        #$error_messages[] = 'Address not added/updated for email: '.$email;
+                      }
+                    }
+
+                    //street address
+                    if(isset($user_array['Street Address']) && $user_array['Street Address'] != '') {
+                        try{
+                            $address_rel = civicrm_api3('address', 'get', array('contact_id' => $contact_id, 'is_primary' => 1, location_type_id => 3));
+                            if(isset($address_rel['id']) && $address_rel['id'] != '') {
+                               $addrParams = array('id' => $address_rel['id'], 'contact_id' => $contact_id, 'location_type_id' => 3, 'street_address' => $user_array['Street Address'], 'city' => $user_array['City'], 'country_id' => $country_id, 'state_province_id' => $state_province_id, 'postal_code' => $user_array['Postal Code'], 'is_primary' => 1);
+                            } else {
+                               $addrParams = array('contact_id' => $contact_id, 'location_type_id' => 3, 'street_address' => $user_array['Street Address'], 'city' => $user_array['City'], 'country_id' => $country_id, 'state_province_id' => $state_province_id, 'postal_code' => $user_array['Postal Code'], 'is_primary' => 1);
+                            }
+                            $addr_result = civicrm_api3('address', 'create', $addrParams);
+                        } catch(CiviCRM_API3_Exception $e) {
+                            $errorMessage = $e->getMessage();
+                            $errorCode = $e->getErrorCode();
+                            $errorData = $e->getExtraParams();
+                            $error_messages[] = 'Address not added/updated for email: '.$email;
+                        }
+                    }
+
+                    //home phone
+                    if(isset($user_array['Home Phone']) && $user_array['Home Phone'] != '') {
+                        try{
+                            $phone_rel = civicrm_api3('phone', 'get', array('contact_id' => $contact_id, 'is_primary' => 1));
+                            if(!empty($phone_rel)) {
+                                $phParams = array('id' => $phone_rel['id'], 'contact_id' => $contact_id, 'location_type_id' => 1, 'phone_type_id' => 1, 'phone' => $user_array['Home Phone'], 'is_primary' => 1);
+                            } else {
+                                $phParams = array('contact_id' => $contact_id, 'location_type_id' => 1, 'phone_type_id' => 1, 'phone' => $user_array['Home Phone'], 'is_primary' => 1);
+                            }
+                            $ph_result = civicrm_api3('phone', 'create', $phParams);
+                        } catch(CiviCRM_API3_Exception $e) {
+                            $errorMessage = $e->getMessage();
+                            $errorCode = $e->getErrorCode();
+                            $errorData = $e->getExtraParams();
+                            $error_messages[] = 'Home Phone not added/updated for email: '.$email;
+                        }
+                    }
+
+                    //mobile phone
+                    if(isset($user_array['Mobile Phone']) && $user_array['Mobile Phone'] != '') {
+                        try{
+                            $phone_rel = civicrm_api3('phone', 'get', array('contact_id' => $contact_id, 'is_primary' => 1));
+                            if(!empty($phone_rel)) {
+                                $phParams = array('id' => $phone_rel['id'], 'contact_id' => $contact_id, 'location_type_id' => 3, 'phone_type_id' => 2, 'phone' => $user_array['Mobile Phone']);
+                            } else {
+                                $phParams = array('contact_id' => $contact_id, 'location_type_id' => 1, 'phone_type_id' => 2, 'phone' => $user_array['Mobile Phone']);
+                            }
+                            $ph_result = civicrm_api3('phone', 'create', $phParams);
+                        } catch(CiviCRM_API3_Exception $e) {
+                            $errorMessage = $e->getMessage();
+                            $errorCode = $e->getErrorCode();
+                            $errorData = $e->getExtraParams();
+                            $error_messages[] = 'Mobile Phone not added/updated for email: '.$email;
+                        }
+                    }
+
+                    //relationship
+                    if($club_id) {
+                        try{
+                            $is_active = (strtolower($user_array['Active(Yes/No)']) == 'yes') ? 1 : 0;  //If No, relationship will be inactive with the club
+
+                            $rel = civicrm_api3('relationship', 'get', array('contact_id_a' => $contact_id, 'relationship_type_id' => 10, 'is_count' =>true));
+                            if($rel['count'] >1){
+                              foreach($rel['values'] as $tmprelid => $tmprelItem){
+                                if($tmprelItem['contact_id_a'] == $contact_id && $tmprelItem['contact_id_b'] == $club_id){
+                                  $relParams = array('id' => $tmprelid, 'contact_id_a' => $contact_id, 'contact_id_b' => $club_id, 'relationship_type_id' => 10, 'start_date' => date('Y-m-d'), 'is_active' => $is_active);
+                                }
+                              }
+                            } else if($rel['count'] >0) {
+                              $relParams = array('id' => $rel['id'], 'contact_id_a' => $contact_id, 'contact_id_b' => $club_id, 'relationship_type_id' => 10, 'start_date' => date('Y-m-d'), 'is_active' => $is_active);
+                            } else {
+                              $relParams = array('contact_id_a' => $contact_id, 'contact_id_b' => $club_id, 'relationship_type_id' => 10, 'start_date' => date('Y-m-d'), 'is_active' => $is_active);
+                            }
+                            $rel_result = civicrm_api3('relationship', 'create', $relParams);
+                        } catch(CiviCRM_API3_Exception $e) {
+                            $errorMessage = $e->getMessage();
+                            $errorCode = $e->getErrorCode();
+                            $errorData = $e->getExtraParams();
+                            $error_messages[] = 'Relationship not added/updated for email: '.$email;
+                        }
+                    }
+                #}
+            }
+        }
+    }
+    return $error_messages;
+}
+
+// Custom Function to Import Club Members Data
+function _club_import_xls($club_id) {
+  if ( ! civicrm_initialize( ) ) {
+    return;
+  }
+  if(empty($club_id)) {
+    return;
+  }
+  require_once "import_form.inc";
+  $contact = civicrm_api3('Contact', 'getsingle', array( 'sequential' => 1, 'return' => array("display_name"), 'id' => $club_id));
+  $html = drupal_get_form('club_data_import_form');
+
+  return $html;
+}
+
+//regional report
+function _region_report_query($contact_id = 0){
+    $where = '';
+    if(is_numeric($contact_id) && $contact_id > 0){
+
+        /********* fetch the contact type *********/
+        try{
+          $result = civicrm_api3('contact', 'get', array( 'id' => $contact_id, 'return.display_name' => 1, 'return.contact_type' => 1, 'return.contact_sub_type' => 1 ));
+        }
+        catch (CiviCRM_API3_Exception $e) {
+          print 'Provided contact id is not in our database.';exit;
+          // handle error here
+          #return array('error' => $e->getMessage(), 'error_code' => $e->getErrorCode(), 'error_data' => $e->getExtraParams());
+        }
+        /********* fetch the contact type *********/
+
+        //if it is region
+        if($result['count'] > 0) {
+            $tmpcid = $result['id'];
+            $contact_type = $result['values'][$tmpcid]['contact_type'];
+            $contact_sub_type = (isset($result['values'][$tmpcid]['contact_sub_type']) && !empty($result['values'][$tmpcid]['contact_sub_type']))  ? array_shift($result['values'][$tmpcid]['contact_sub_type']) : '';
+            $display_name = $result['values'][$tmpcid]['display_name'];
+
+            /********* if it is individual, fetch region details from individual *********/
+            if($contact_type == 'Organization' && $contact_sub_type == 'Region'){
+                $sql = "SELECT rcc.id as region_id, rcc.display_name as region_name FROM civicrm_contact rcc inner join civicrm_value_region_detail_25 as regdetail ON regdetail.entity_id=rcc.id WHERE active_region_126 = '1' AND rcc.contact_type='Organization' AND rcc.contact_sub_type='Region' AND rcc.id = {$contact_id} AND rcc.is_deleted = '0' ORDER BY rcc.id ASC";
+                return $sql;
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    } else {
+        $sql = "SELECT rcc.id as region_id, rcc.display_name as region_name FROM civicrm_contact rcc inner join civicrm_value_region_detail_25 as regdetail ON regdetail.entity_id=rcc.id WHERE active_region_126 = '1' AND rcc.contact_type='Organization' AND rcc.contact_sub_type='Region' AND rcc.is_deleted = '0' ORDER BY rcc.id ASC";
+    }
+
+    return $sql;
+}
+
+function _get_format() {
+    static $format = null;
+
+    if($format == null) {
+        $format = isset($_GET['format']) ? $_GET['format'] : 'xls';
+    }
+
+    return $format;
+}
+
+function _get_mime_type(){
+    static $mime_type = null;
+
+    if($mime_type != null) return $mime_type;
+
+    switch(_get_format()){
+
+        case 'pdf':
+            $mime_type = 'application/pdf';
+            break;
+
+        case 'docx':
+            $mime_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+            break;
+
+        case 'xls':
+        default :
+            $mime_type = 'application/vnd.ms-excel';
+    }
+
+    return $mime_type;
+}
+
+function _create_regional_report_dir_day_wise($dir_path){
+    if (!mkdir($dir_path, 0777, true)) {
+        throw new Exception('Directory('.$dir_path.') not created.');
+    }
+}
+
+function regional_report(){
+
+    if (!defined('CIVICRM_SETTINGS_PATH')) civicrm_initialize();
+
+    $contact_id = 0;
+
+    $key = filter_xss($_REQUEST['key']);
+    if(is_string($key) && filter_var($key, FILTER_VALIDATE_EMAIL)){
+        try{
+            $contact_id = civicrm_api3('contact', 'getvalue', array('email' => $key, 'return' => 'id'));
+        }
+        catch (CiviCRM_API3_Exception $e) {
+          // handle error here
+          drupal_set_message(t('email address is not in the database.'), 'error');
+          return array('error' => $e->getMessage(), 'error_code' => $e->getErrorCode(), 'error_data' => $e->getExtraParams());
+        }
+    } elseif($key) {
+        $contact_id = $key;
+    }
+
+drupal_set_message(t('contact_id = ' . $contact_id), 'error');
+    if (in_array($contact_id, array(62829,62830))) {
+        return array('error' => 'No reports for MRJ regions', 'error_code' => 0, 'error_data' => array());
+    }
+
+    $region_query = _region_report_query($contact_id);  //get the region query
+
+    if($region_query === false) {
+        print 'Provided contact id is not a region.';exit;
+    }
+
+    $regionIDs = array();
+
+    $dao = CRM_Core_DAO::executeQuery($region_query);
+    if($dao->N) {
+        while ($dao->fetch()) {
+            $regionIDs[$dao->region_id]['region_name'] = $dao->region_name;
+            #$regionIDs[$dao->region_id]['region_users'][$dao->contact_id] = array('email' => $dao->email);
+        }
+    } else {
+        print 'Provided region id is either inactive or not in our database.';
+        exit;
+    }
+    $dao->free();
+
+    _get_format();
+
+    #foreach($regionIDs as $region_id => $regional_contact_details) {
+        $filepath = _generate_regional_summary_in_export_document($regionIDs);
+        _report_display($filepath);
+        //generation of excel document is enought, so we hided the email functionality and attachment.
+        /*if($filepath !== false){
+            #print 'File path: '.$filepath.'<br />';
+            $regional_contact_details['region_report_filepath'] = $filepath;
+            _sent_regional_report_email_with_attachment($region_id, $regional_contact_details);
+        }*/
+    #}
+}
+
+function _report_display($filepath = ''){
+    if($_GET['dn'] == true && $filepath != '') {
+            $quoted = sprintf('"%s"', addcslashes(basename($filepath), '"\\'));
+            $size   = filesize($filepath);
+
+            header('Content-Description: File Transfer');
+            header('Content-Type: application/octet-stream');
+            header('Content-Disposition: attachment; filename=' . $quoted);
+            header('Content-Transfer-Encoding: binary');
+            header('Connection: Keep-Alive');
+            header('Expires: 0');
+            header('Cache-Control: must-revalidate, post-check=0, pre-check=0');
+            header('Pragma: public');
+            header('Content-Length: ' . $size);
+            if(readfile($filepath)) {
+                unlink($filepath);
+            }
+        } else {
+            print "Region ID: {$region_id}"; var_dump($filepath);
+        }
+    }
+
+function regional_report_onfly($region_id = 0){
+    if (in_array($region_id, array(62829,62830))) return '';
+
+    if($region_id == 0) {
+        drupal_set_message(t('Please provide the valid region id to generate the report.'), 'error');
+        drupal_goto('<front>');
+    }
+
+    if (!defined('CIVICRM_SETTINGS_PATH')) civicrm_initialize();
+
+    try{
+        $display_name = civicrm_api3('contact', 'getvalue', array('id' => $region_id, 'return' => 'display_name'));
+    }
+    catch (CiviCRM_API3_Exception $e) {
+        // handle error here
+        drupal_set_message(t('Please provide the valid region id to generate the report.'), 'error');
+        drupal_goto('<front>');
+    }
+
+    $params = array($region_id => array('region_name' => $display_name));
+    $filepath = _generate_regional_summary_in_export_document($params);
+    $_GET['dn'] = true; //forcely download
+    _report_display($filepath);
+}
+
+/*
+ * regional summary data export document formate
+ */
+function _generate_regional_summary_in_export_document($regionIDs) {
+
+    //get format of the file
+    $format = _get_format();
+
+
+    if(count($regionIDs) >1) {
+        $region_name = 'region_report'.time();
+    } else {
+        $region_name_arr = reset($regionIDs);
+        $region_name = $region_name_arr['region_name'];
+    }
+
+    // Store the file in sites/default/files
+    $dir = file_stream_wrapper_get_instance_by_uri('public://')->realpath();
+    $filename = preg_replace('/[^a-zA-Z0-9]/', '-', strtolower($region_name)).time().'.'.$format;
+    $date = date('m-d-Y');
+
+    //check the regional report directory is available or not for today, otherwise create it programmatically
+    #$dir_path = "$dir/regional_report/{$date}";
+    $dir_path = "$dir/regional_report/tmp";
+    if(file_exists($dir_path) === false) {
+        try {
+            _create_regional_report_dir_day_wise($dir_path);
+        } catch(Exception $e) {
+            #print 'Caught exception: ',  $e->getMessage(), "\n";
+            watchdog('regional_report', t("Oops! regional report path({$dir_path}) is not exist and can't create programmatically.!"), 'error');
+            $dir_path = "$dir/phpexcel";
+        }
+    }
+    $path = $dir_path.'/'.$filename;
+
+    //check if the same report is already generated for the day. If yes, sent that file path
+    if(file_exists($path)) {
+        unlink($path);
+        #return $path;
+    }
+
+
+    /********* Initiazise the variables *********/
+    $data = array();
+    $new_line = "\r\n";
+    $colom_separator = ',';
+
+    //excel sheet top column headers
+    $headers['sheet1'] = array('', '', '', '', '', '', '', '', 'CURRENT International', '','','', 'PRIOR International', '','','', 'CURRENT Regional', '','','', 'PRIOR Regional', '','','',);
+
+    //excel sheet second column headers
+    $data['sheet1'][] = array('Club', 'Club #', 'Baseline 2013', 'Last List', 'Dues Rate', 'Regional Rate', 'Members Billed', 'Members Listed',
+                              'Dues', 'Adjustment', 'Paid', 'Balance', //CURRENT International
+                              'Dues', 'Adjustment', 'Paid', 'Balance', //PRIOR International
+                              'Dues', 'Adjustment', 'Paid', 'Balance', //CURRENT Regional
+                              'Dues', 'Adjustment', 'Paid', 'Balance', //PRIOR Regional
+                            );
+
+    $html = '';
+    $baseline = $billed = $listed = $c_dues = $c_adjustment = $c_paid = $c_balance = 0;
+    $p_dues = $p_adjustment = $p_paid = $p_balance = $rc_dues = $rc_adjustment = $rc_paid=0;
+    $rc_balance = $rp_dues = $rp_adjustment = $rp_paid = $rp_balance = 0;
+
+    $i = 1;
+    /********* Initiazise the variables *********/
+
+    foreach($regionIDs as $region_id => $regional_contact_details) {
+
+        $dao = CRM_Core_DAO::executeQuery( _region_summary_mysql_query($region_id), CRM_Core_DAO::$_nullArray);
+
+        //no region data no need to generate the document
+        if(!$dao->N) { continue; }
+
+
+        while($dao->fetch()){
+
+            //reducing the server overload for 15 seconds
+            if($i == 100) {
+                sleep(10);
+                $i = 1;
+            } else {
+                $i = $i +1;
+            }
+
+            $baseline = $baseline + $dao->club_members_2013_92;
+            $billed = $billed + $dao->number_of_members_billed_for_116;
+            $listed = $listed + $dao->number_of_club_members_104;
+            $c_dues = $c_dues + $dao->current_billing_international_105;
+            $c_adjustment = $c_adjustment+$dao->adjustment_prior_international_119;
+            $c_paid = $c_paid + $dao->paid_to_date_international_111;
+            $c_balance = $c_balance + $dao->current_balance_internationla_113;
+
+
+            if($dao->past_due_balance_international_121 != 0 ){
+                $p_dues += $dao->past_due_international_107;
+                $p_adjustment += $dao->adjustment_prior_international_119;
+                $p_paid += $dao->paid_prior_international_118;
+                $p_balance += $dao->past_due_balance_international_121;
+            }
+
+            if($dao->current_billing_region_106 != 0 ){
+                $rc_dues += $dao->current_billing_region_106;
+                $rc_adjustment += $dao->adjustment_regional_110;
+                $rc_paid += $dao->paid_to_date_regional_112;
+                $rc_balance += $dao->current_balance_regional_115;
+            }
+
+            if($dao->past_due_balance_regional_122 != 0 ){
+                $rp_dues += $dao->past_due_regional_108;
+                $rp_adjustment += $dao->adjustment_prior_regional_120;
+                $rp_paid += $dao->paid_prior_regional_117;
+                $rp_balance += $dao->past_due_balance_regional_122;
+            }
+
+
+            $data['sheet1'][] = array(
+                $dao->addressee_display,
+                $dao->club_id_7,    //user assigned field of club id
+                $dao->club_members_2013_92,
+                $dao->list_date,
+                $dao->dues_rate_98,
+                $dao->regional_dues_rate_99,
+                $dao->number_of_members_billed_for_116,
+                $dao->number_of_club_members_104,
+
+                /****** CURRENT International ******/
+                $dao->current_billing_international_105,
+                $dao->adjustment_prior_international_119,
+                $dao->paid_to_date_international_111,
+                $dao->current_balance_internationla_113,
+                /****** CURRENT International ******/
+
+                /****** PRIOR International ******/
+                $dao->past_due_international_107,
+                $dao->adjustment_prior_international_119,
+                $dao->paid_prior_international_118,
+                $dao->past_due_balance_international_121,
+                /****** PRIOR International ******/
+
+                /****** CURRENT Regional ******/
+                $dao->current_billing_region_106,
+                $dao->adjustment_regional_110,
+                $dao->paid_to_date_regional_112,
+                $dao->current_balance_regional_115,
+                /****** CURRENT Regional ******/
+
+                /****** PRIOR Regional ******/
+                $dao->past_due_regional_108,
+                $dao->adjustment_prior_regional_120,
+                $dao->paid_prior_regional_117,
+                $dao->past_due_balance_regional_122,
+                /****** PRIOR Regional ******/
+            );
+        }
+        $dao->free();
+    }
+
+    $data['sheet1'][] = array(
+        'Total', '', $baseline,
+        '', '', '', $billed, $listed,
+        $c_dues,
+        $c_adjustment,
+        $c_paid,
+        $c_balance,
+
+        $p_dues,
+        $p_adjustment,
+        $p_paid,
+        $p_balance,
+
+        $rc_dues,
+        $rc_adjustment,
+        $rc_paid,
+        $rc_balance,
+
+        $rp_dues,
+        $rp_adjustment,
+        $rp_paid,
+        $rp_balance,
+    );
+
+    // Use the .xls format by default
+    $options = array('format' => $format);
+    $options['custom_arg'] = 'regional_report'; //custom argument to check inside the common hook method - hook_phpexcel_export
+    $options['custom_arg_total_rows'] = count($data['sheet1']);
+
+    $result = phpexcel_export($headers, $data, $path, $options);    //generate the document
+    if ($result == PHPEXCEL_SUCCESS) {
+        return $path;
+    } else {
+      watchdog('regional_report', t("Oops ! An error occured !"), 'error');
+      return false;
+    }
+}
+
+
+/*
+ * regional summary data for email format
+ */
+function _generate_regional_summary_for_email_html($region_id) {
+    if (in_array($region_id, array(62829,62830))) return '';
+
+    $dao = CRM_Core_DAO::executeQuery(_region_summary_mysql_query($region_id), CRM_Core_DAO::$_nullArray);
+
+    if(!$dao->N) return;
+
+    $data = array();
+    $new_line = "\r\n";
+    $colom_separator = ',';
+    $format = _get_format();
+    $html = '';
+    $baseline = $billed = $listed = $c_dues = $c_adjustment = $c_paid = $c_balance = 0;
+    $p_dues = $p_adjustment = $p_paid = $p_balance = $rc_dues = $rc_adjustment = $rc_paid=0;
+    $rc_balance = $rp_dues = $rp_adjustment = $rp_paid = $rp_balance = 0;
+
+    $style = '';
+
+    if($_REQUEST['regionalReport'] === true) {
+        $style = 'style="font-size:13px; line-height: normal;"';
+    }
+    $html = '<table border="1" '.$style.' cellspacing="0" cellpadding="1" id="table_region_summary">
+      <thead><tr style="font-weight:bold;" >
+            <th>Club</th>
+            <th>Club #</th>
+            <th>Baseline 2013</th>
+            <th>Last List</th>
+            <th>Dues Rate</th>
+            <th>Regional Rate</th>
+            <th>Members Billed</th>
+            <th>Members Listed</th>
+            <th>&nbsp;</th>
+            <th>Dues</th>
+            <th>Adjustment</th>
+            <th>Paid</th>
+            <th>Balance</th>
+          </tr></thead><tbody>';
+
+    while($dao->fetch()){
+
+        /****** CURRENT International ******/
+        $baseline = $baseline + $dao->club_members_2013_92;
+        $billed = $billed + $dao->number_of_members_billed_for_116;
+        $listed = $listed + $dao->number_of_club_members_104;
+        $c_dues = $c_dues + $dao->current_billing_international_105;
+        $c_adjustment = $c_adjustment+$dao->adjustment_prior_international_119;
+        $c_paid = $c_paid + $dao->paid_to_date_international_111;
+        $c_balance = $c_balance + $dao->current_balance_internationla_113;
+        /****** CURRENT International ******/
+
+
+        /****** PRIOR International ******/
+        if ($dao->past_due_balance_international_121 != 0 ){
+            $p_dues += $dao->past_due_international_107;
+            $p_adjustment += $dao->adjustment_prior_international_119;
+            $p_paid += $dao->paid_prior_international_118;
+            $p_balance += $dao->past_due_balance_international_121;
+        }
+        /****** PRIOR International ******/
+
+
+        /****** CURRENT Regional ******/
+        if  ($dao->current_billing_region_106 != 0 ){
+            $rc_dues += $dao->current_billing_region_106;
+            $rc_adjustment += $dao->adjustment_regional_110;
+            $rc_paid += $dao->paid_to_date_regional_112;
+            $rc_balance += $dao->current_balance_regional_115;
+        }
+        /****** CURRENT Regional ******/
+
+        /****** PRIOR Regional ******/
+        if  ($dao->past_due_balance_regional_122 != 0 ){
+            $rp_dues += $dao->past_due_regional_108;
+            $rp_adjustment += $dao->adjustment_prior_regional_120;
+            $rp_paid += $dao->paid_prior_regional_117;
+            $rp_balance += $dao->past_due_balance_regional_122;
+        }
+        /****** PRIOR Regional ******/
+
+        $html .= '<tr >
+                    <td>' . $dao->addressee_display . '</td>
+                    <td class="club_right">' . $dao->club_id_7 . '</td>
+                    <td align="right">' . $dao->club_members_2013_92 . '</td>
+                    <td align="right">' . $dao->list_date . '</td>
+                    <td align="right">' . $dao->dues_rate_98 . '</td>
+                    <td align="right">' . $dao->regional_dues_rate_99 . '</td>
+                    <td align="right">' . $dao->number_of_members_billed_for_116 . '</td>
+                    <td align="right">' . $dao->number_of_club_members_104 . '</td>
+                    <td>Current</td>
+                    <td align="right">' . $dao->current_billing_international_105 . '</td>
+                    <td align="right">' . $dao->adjustment_prior_international_119 . '</td>
+                    <td align="right" scope="col">' . $dao->paid_to_date_international_111 . '</td>
+                    <td align="right" scope="col">' . $dao->current_balance_internationla_113 . '</td>
+                </tr>';
+
+
+        if ($dao->past_due_balance_international_121 != 0 ){
+              $html .= '<tr >
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td bgcolor="#FFFF33">Past</td>
+                <td align="right" bgcolor="#FFFF33">' . $dao->past_due_international_107 . '</td>
+                <td align="right" bgcolor="#FFFF33">' . $dao->adjustment_prior_international_119 . '</td>
+                <td align="right" bgcolor="#FFFF33">' . $dao->paid_prior_international_118 . '</td>
+                <td align="right" bgcolor="#FFFF33">' . $dao->past_due_balance_international_121 . '</td>
+              </tr>';
+        }
+
+        if  ($dao->current_billing_region_106 != 0 ){
+            $html .= '<tr >
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td bgcolor="#66FF66" scope="col">Region</td>
+                <td align="right" bgcolor="#66FF66" scope="col">' . $dao->current_billing_region_106 . '</td>
+                <td align="right" bgcolor="#66FF66" scope="col">' . $dao->adjustment_regional_110 . '</td>
+                <td align="right" bgcolor="#66FF66" scope="col">' . $dao->paid_to_date_regional_112 . '</td>
+                <td align="right" bgcolor="#66FF66" scope="col">' . $dao->current_balance_regional_115 . '</td>
+                </tr>';
+        }
+
+        if  ($dao->past_due_balance_regional_122 != 0 ){
+            $html .= '<tr >
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td scope="col"></td>
+                <td bgcolor="#66FFFF" scope="col">Past Region</td>
+                <td align="right" bgcolor="#66FFFF" scope="col">' . $dao->past_due_regional_108 . '</td>
+                <td align="right" bgcolor="#66FFFF" scope="col">' . $dao->adjustment_prior_regional_120 . '</td>
+                <td align="right" bgcolor="#66FFFF" scope="col">' . $dao->paid_prior_regional_117 . '</td>
+                <td align="right" bgcolor="#66FFFF" scope="col">' . $dao->past_due_balance_regional_122 . '</td>
+                </tr>';
+        }
+
+    }
+    $dao->free();
+
+
+    $html .= '<tr >
+      <td scope="col"><b>Current Total</b></td>
+      <td align="right" scope="col"></td>
+                <td align="right" scope="col">' . $baseline . '</td>
+                <td align="right" scope="col"></td>
+                <td align="right" scope="col"></td>
+                <td align="right" scope="col"></td>
+                <td align="right" scope="col">' . $billed . '</td>
+                <td align="right" scope="col">' . $listed . '</td>
+      <td scope="col">Current</td>
+                <td align="right" scope="col">' . $c_dues . '</td>
+                <td align="right" scope="col">' . $c_adjustment . '</td>
+                <td align="right" scope="col">' . $c_paid . '</td>
+                <td align="right" scope="col">' . $c_balance . '</td>
+    </tr>';
+
+    if ($p_balance != 0 ){
+      $html .= '<tr >
+        <td bgcolor="#FFFF33">Past Total</td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td bgcolor="#FFFF33">Past</td>
+        <td align="right" bgcolor="#FFFF33">' . $p_dues . '</td>
+        <td align="right" bgcolor="#FFFF33">' . $p_adjustment . '</td>
+        <td align="right" bgcolor="#FFFF33">' . $p_paid . '</td>
+        <td align="right" bgcolor="#FFFF33">' . $p_balance . '</td>
+      </tr>';
+    }
+
+    if ($rc_balance != 0 ){
+      $html .= '<tr >
+        <td bgcolor="#66FF66">Region Total</td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td bgcolor="#66FF66">Region</td>
+        <td align="right" bgcolor="#66FF66">' . $rc_dues . '</td>
+        <td align="right" bgcolor="#66FF66">' . $rc_adjustment . '</td>
+        <td align="right" bgcolor="#66FF66">' . $rc_paid . '</td>
+        <td align="right" bgcolor="#66FF66">' . $rc_balance . '</td>
+      </tr>';
+    }
+
+    if ($rp_balance != 0 ) {
+      $html .= '<tr >
+        <td bgcolor="#6FFFFF">Past Region Total</td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td bgcolor="#66FFFF">Past Region</td>
+        <td align="right" bgcolor="#66FFFF">' . $rp_dues . '</td>
+        <td align="right" bgcolor="#66FFFF">' . $rp_adjustment . '</td>
+        <td align="right" bgcolor="#66FFFF">' . $rp_paid . '</td>
+        <td align="right" bgcolor="#66FFFF">' . $rp_balance . '</td>
+              </tr>';
+    }
+    $html .= '</tbody></table>';
+
+    return $html;
+}
+
+
+function club_details_views_api() {
+  return array(
+    'api' => 3,
+  );
+}
+
+/**
+ * Implements hook_translated_menu_link_alter().
+ */
+function club_details_translated_menu_link_alter(&$item, $map) {
+  if (!empty($item['access'])) {
+    global $user;
+
+    // Menu administrators can see all links.
+    if (in_array('administrator', $user->roles) || (strpos(current_path(), 'admin/structure/menu/manage/' . $item['menu_name']) === 0 && user_access('administer menu'))) {
+      return;
+    }
+
+    if ($item['mlid']=='5804' && !club_details_user_access()) {
+      $item['access'] = FALSE;
+    }
+  }
+}

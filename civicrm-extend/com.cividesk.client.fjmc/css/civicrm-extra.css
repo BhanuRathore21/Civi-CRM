@@ -1,0 +1,18 @@
+/* #8523 Provide padding between the radio buttons */
+input.crm-form-radio + label, input.crm-form-checkbox + label {
+  margin-right: 12px;
+}
+
+/* NG 5/7/2021: styling of Manage Subscriptions page */
+table.crm-profile-tagsandgroups input.crm-form-checkbox {
+  margin-right: 7px;
+}
+
+table.crm-profile-tagsandgroups #crm-tagGroupTable {
+  font-size: 14px;
+}
+
+/* NG 11/7/2022: #11050 adjust width of field on https://www.fjmc.org/civicrm/event/register?reset=1&id=96 */
+#editrow-custom_11 input#custom_11 {
+  width: 500px;
+}
